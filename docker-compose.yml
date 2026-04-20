@@ -1,4 +1,16 @@
 services:
+  crabtrap:
+    image: quay.io/brexhq/crabtrap:latest
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    environment:
+      DATABASE_URL: postgres://crabtrap:secret@postgres:5432/crabtrap
+    volumes:
+      - certs:/app/certs
+    depends_on:
+      postgres:
+        condition: service_healthy
   postgres:
     image: postgres:17-alpine
     environment:
@@ -16,4 +28,5 @@ services:
       retries: 5
 
 volumes:
+  certs:
   postgres_data:

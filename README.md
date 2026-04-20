@@ -12,6 +12,29 @@ If you run AI agents that call external services — Slack, Gmail, GitHub, or an
   <img src="docs/crabtrap-flow.svg" alt="CrabTrap request flow" width="800" />
 </p>
 
+## Quickstart
+
+CrabTrap runs as a Docker container alongside PostgreSQL. See [QUICKSTART.md](QUICKSTART.md) for the full walkthrough — the short version:
+
+```bash
+docker compose up -d                                                    # start CrabTrap + Postgres
+docker compose cp crabtrap:/app/certs/ca.crt ./ca.crt                   # copy the generated CA cert
+# create test-admin admin user and store their web_token in a variable
+admin_token=$(docker compose exec -it crabtrap ./gateway create-admin-user test-admin \
+    | tail -n1 | cut -d" " -f2)
+token=$(curl -X POST http://localhost:8081/admin/users \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${admin_token}" \
+    -d '{"id": "alice@example.com", "is_admin": false}' \
+    | jq -r '.channels[] | select(.channel_type == "gateway_auth") | .gateway_auth_token')
+# test with
+curl -x http://${token}:@localhost:8080 \
+    --cacert ca.crt https://httpbin.org/get
+```
+
+The proxy listens on `localhost:8080`, the admin UI is at `localhost:8081` and you can login to it with the $admin_token.
+
+
 ## How It Works
 
 1. **Agent connects** — set `HTTP_PROXY` and `HTTPS_PROXY` to point at CrabTrap
@@ -50,23 +73,6 @@ If you run AI agents that call external services — Slack, Gmail, GitHub, or an
 - **Does not provide human-in-the-loop approval** — there is no approval queue, no Slack prompts, and no escalation path. Decisions are made automatically by static rules and the LLM judge.
 - **Does not filter API responses** — only outbound requests are evaluated. Responses from upstream APIs are streamed back to the agent unexamined.
 - **Does not inspect WebSocket frames** — only the WebSocket upgrade request is evaluated. Once upgraded, frames pass through uninspected.
-
-## Quickstart
-
-CrabTrap runs as a Docker container alongside PostgreSQL. See [QUICKSTART.md](QUICKSTART.md) for the full walkthrough — the short version:
-
-```bash
-docker compose up -d                                                    # start CrabTrap + Postgres
-docker compose cp crabtrap:/app/certs/ca.crt ./ca.crt                   # copy the generated CA cert
-
-export HTTP_PROXY=http://localhost:8080
-export HTTPS_PROXY=http://localhost:8080
-export NODE_EXTRA_CA_CERTS=$(pwd)/ca.crt                                # or REQUESTS_CA_BUNDLE for Python
-
-curl -x http://localhost:8080 --cacert ca.crt https://httpbin.org/get   # test it
-```
-
-The proxy listens on `localhost:8080`, the admin UI is at `localhost:8081`.
 
 ## Configuration
 

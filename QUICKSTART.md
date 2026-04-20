@@ -51,7 +51,23 @@ The CA certificate is generated automatically on first run.
 - **Proxy**: `localhost:8080`
 - **Admin UI**: `localhost:8081`
 
-## 3. Copy the CA certificate
+## 3. Create Admin User and store its token in $web_token bash variable
+
+```
+admin_token=$(docker compose exec -it crabtrap ./gateway create-admin-user test-admin \
+    | tail -n1 | cut -d" " -f2)
+```
+
+## 4. Create Agent User
+
+```
+curl -X POST http://localhost:8081/admin/users \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $web_token" \
+    -d '{"id": "alice@example.com", "is_admin": false}'
+```
+
+## 5. Copy the CA certificate
 
 Copy the auto-generated CA certificate out of the container:
 
@@ -59,7 +75,7 @@ Copy the auto-generated CA certificate out of the container:
 docker compose cp crabtrap:/app/certs/ca.crt ./ca.crt
 ```
 
-## 4. Trust the CA certificate
+## 6. Trust the CA certificate
 
 Your agent needs to trust CrabTrap's CA so it can decrypt HTTPS traffic. Pick one approach:
 
@@ -82,17 +98,26 @@ sudo cp ca.crt /usr/local/share/ca-certificates/crabtrap.crt
 sudo update-ca-certificates
 ```
 
-## 5. Point your agent at it
+## 7. Point your agent at it
+
+Retrieve the token created for the user
 
 ```bash
-export HTTP_PROXY=http://localhost:8080
-export HTTPS_PROXY=http://localhost:8080
+token=$(curl -s 'http://localhost:8081/admin/users/alice%40example.com' \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $web_token" \
+    | jq -r '.channels[] | select(.channel_type == "gateway_auth") | .gateway_auth_token')
+```
+
+```bash
+export HTTP_PROXY=http://${token}:@localhost:8080
+export HTTPS_PROXY=http://${token}:@localhost:8080
 ```
 
 Test it:
 
 ```bash
-curl -x http://localhost:8080 --cacert ca.crt https://httpbin.org/get
+curl -x http://${token}:@localhost:8080 --cacert ca.crt https://httpbin.org/get
 ```
 
 ## Configuration
