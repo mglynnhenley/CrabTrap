@@ -6,8 +6,10 @@ services:
       - "8081:8081"
     environment:
       DATABASE_URL: postgres://crabtrap:secret@postgres:5432/crabtrap
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
     volumes:
       - certs:/app/certs
+      - ./gateway.yaml:/app/config/gateway.yaml:ro
     depends_on:
       postgres:
         condition: service_healthy

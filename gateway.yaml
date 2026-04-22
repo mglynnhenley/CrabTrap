@@ -1,0 +1,19 @@
+log_level: info
+
+approval:
+  mode: llm
+  timeout: 30s
+
+database:
+  url: "${DATABASE_URL}"
+
+llm_judge:
+  enabled: true
+  provider: openai
+  openai_api_key: "${OPENROUTER_API_KEY}"
+  openai_base_url: https://openrouter.ai/api
+  eval_model: openai/gpt-4o-mini
+  fast_model: openai/gpt-4o-mini
+  thinking_model: openai/gpt-4o-mini
+  timeout: 30s
+  fallback_mode: deny
