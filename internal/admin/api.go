@@ -498,12 +498,13 @@ func (a *API) handleLLMPolicies(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		limitBody(w, r, maxBodySize)
 		var body struct {
-			Name        string             `json:"name"`
-			Prompt      string             `json:"prompt"`
-			Provider    string             `json:"provider"`
-			Model       string             `json:"model"`
-			Status      string             `json:"status"`
-			StaticRules []types.StaticRule `json:"static_rules"`
+			Name           string             `json:"name"`
+			Prompt         string             `json:"prompt"`
+			ResponsePrompt string             `json:"response_prompt"`
+			Provider       string             `json:"provider"`
+			Model          string             `json:"model"`
+			Status         string             `json:"status"`
+			StaticRules    []types.StaticRule `json:"static_rules"`
 		}
 		if !decodeBody(w, r, &body) {
 			return
@@ -520,6 +521,13 @@ func (a *API) handleLLMPolicies(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to create policy", err)
 			return
+		}
+		if body.ResponsePrompt != "" && policy.Status == "draft" {
+			if err := a.policyStore.UpdateResponsePrompt(policy.ID, body.ResponsePrompt); err != nil {
+				respondError(w, http.StatusInternalServerError, "failed to set response_prompt", err)
+				return
+			}
+			policy.ResponsePrompt = body.ResponsePrompt
 		}
 		respondJSON(w, http.StatusCreated, policy)
 
@@ -594,11 +602,13 @@ func (a *API) handleLLMPolicyAction(w http.ResponseWriter, r *http.Request) {
 		// Update a draft policy's editable fields.
 		limitBody(w, r, maxBodySize)
 		var body struct {
-			Name        string             `json:"name"`
-			Prompt      string             `json:"prompt"`
-			Provider    string             `json:"provider"`
-			Model       string             `json:"model"`
-			StaticRules []types.StaticRule `json:"static_rules"`
+			Name              string             `json:"name"`
+			Prompt            string             `json:"prompt"`
+			ResponsePrompt    string             `json:"response_prompt"`
+			ResponsePromptSet bool               `json:"response_prompt_set"`
+			Provider          string             `json:"provider"`
+			Model             string             `json:"model"`
+			StaticRules       []types.StaticRule `json:"static_rules"`
 		}
 		if !decodeBody(w, r, &body) {
 			return
@@ -619,6 +629,19 @@ func (a *API) handleLLMPolicyAction(w http.ResponseWriter, r *http.Request) {
 			}
 			respondError(w, http.StatusInternalServerError, "failed to update policy", err)
 			return
+		}
+		// Only overwrite response_prompt when the caller explicitly set response_prompt_set=true.
+		// That keeps old UIs that don't know about this field from blanking it.
+		if body.ResponsePromptSet {
+			if err := a.policyStore.UpdateResponsePrompt(id, body.ResponsePrompt); err != nil {
+				if errors.Is(err, llmpolicy.ErrPolicyNotDraft) {
+					http.Error(w, err.Error(), http.StatusConflict)
+					return
+				}
+				respondError(w, http.StatusInternalServerError, "failed to update response_prompt", err)
+				return
+			}
+			policy.ResponsePrompt = body.ResponsePrompt
 		}
 		respondJSON(w, http.StatusOK, policy)
 
@@ -658,6 +681,13 @@ func (a *API) handleLLMPolicyAction(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to fork policy", err)
 			return
+		}
+		if parent.ResponsePrompt != "" {
+			if err := a.policyStore.UpdateResponsePrompt(policy.ID, parent.ResponsePrompt); err != nil {
+				respondError(w, http.StatusInternalServerError, "failed to copy response_prompt to fork", err)
+				return
+			}
+			policy.ResponsePrompt = parent.ResponsePrompt
 		}
 		slog.Info("Admin API: forked llm_policy", "parent_id", id, "new_id", policy.ID)
 		respondJSON(w, http.StatusCreated, policy)

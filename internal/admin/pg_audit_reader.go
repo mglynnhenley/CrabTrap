@@ -165,17 +165,24 @@ func (r *PGAuditReader) Add(entry types.AuditEntry) {
 		llmResponseIDArg = &entry.LLMResponseID
 	}
 
+	var respLLMResponseIDArg *string
+	if entry.ResponseLLMResponseID != "" {
+		respLLMResponseIDArg = &entry.ResponseLLMResponseID
+	}
+
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO audit_log(
 			id, user_id, timestamp, request_id, method, url, operation, decision,
 			cache_hit, approved_by, approved_at, channel, response_status, duration_ms,
 			error, request_headers, request_body, response_headers, response_body,
-			api_info, llm_response_id, llm_policy_id
+			api_info, llm_response_id, llm_policy_id,
+			response_decision, response_llm_response_id
 		) VALUES(
 			$1,$2,$3,$4,$5,$6,$7,$8,
 			$9,$10,$11,$12,$13,$14,
 			$15,$16,$17,$18,$19,
-			$20,$21,$22
+			$20,$21,$22,
+			$23,$24
 		)
 	`,
 		id, userIDArg, entry.Timestamp, entry.RequestID, entry.Method, sanitizeUTF8(entry.URL),
@@ -185,6 +192,7 @@ func (r *PGAuditReader) Add(entry types.AuditEntry) {
 		sanitizeUTF8(entry.Error), json.RawMessage(reqHeadersJSON), sanitizeUTF8(entry.RequestBody),
 		json.RawMessage(respHeadersJSON), sanitizeUTF8(entry.ResponseBody),
 		apiInfoJSON, llmResponseIDArg, llmPolicyIDArg,
+		entry.ResponseDecision, respLLMResponseIDArg,
 	)
 	if err != nil {
 		slog.Error("PGAuditReader.Add error", "error", err)
@@ -262,7 +270,8 @@ const auditSelectCols = `
 		al.response_status, al.duration_ms,
 		al.error, al.request_headers, al.request_body, al.response_headers, al.response_body,
 		al.api_info, COALESCE(lr.reason,''), COALESCE(al.llm_policy_id,''),
-		COALESCE(al.llm_response_id,'')`
+		COALESCE(al.llm_response_id,''),
+		COALESCE(al.response_decision,''), COALESCE(rlr.reason,''), COALESCE(al.response_llm_response_id,'')`
 
 // scanAuditEntry reads one audit_log row (from auditSelectCols) into an AuditEntry.
 func scanAuditEntry(rows interface {
@@ -280,6 +289,7 @@ func scanAuditEntry(rows interface {
 		&e.CacheHit, &e.ApprovedBy, &approvedAt, &e.Channel, &e.ResponseStatus, &e.DurationMs,
 		&e.Error, &reqHeadersJSON, &e.RequestBody, &respHeadersJSON, &e.ResponseBody,
 		&apiInfoJSON, &e.LLMReason, &e.LLMPolicyID, &e.LLMResponseID,
+		&e.ResponseDecision, &e.ResponseReason, &e.ResponseLLMResponseID,
 	); err != nil {
 		return types.AuditEntry{}, err
 	}
@@ -327,7 +337,8 @@ func (r *PGAuditReader) Query(filter AuditFilter) []types.AuditEntry {
 	q := fmt.Sprintf(`
 		SELECT%s
 		FROM audit_log al
-		LEFT JOIN llm_responses lr ON lr.id = al.llm_response_id
+		LEFT JOIN llm_responses lr  ON lr.id  = al.llm_response_id
+		LEFT JOIN llm_responses rlr ON rlr.id = al.response_llm_response_id
 		%s
 		ORDER BY al.timestamp DESC
 		LIMIT %d OFFSET %d

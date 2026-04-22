@@ -82,6 +82,12 @@ func (s *Server) Start() error {
 	}
 	handler.llmResponseWriter = s.llmResponseWriter
 
+	// Opt in to response-side judging when enabled in config.
+	s.approvalManager.SetInspectResponses(s.config.Approval.InspectResponses)
+	if s.config.Approval.InspectResponses {
+		slog.Info("response inspection enabled: upstream responses will be judged using policy.response_prompt")
+	}
+
 	// Wire up per-IP rate limiting (disabled when rate_limit_per_ip is explicitly 0).
 	if s.config.Proxy.RateLimitPerIP != nil && *s.config.Proxy.RateLimitPerIP > 0 {
 		burst := s.config.Proxy.RateLimitBurst

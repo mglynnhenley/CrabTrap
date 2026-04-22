@@ -29,6 +29,7 @@ type Store interface {
 	UpsertMetadata(id string, metadata *types.PolicyMetadata) error
 	Create(name, prompt, provider, model, forkedFrom, status string, staticRules []types.StaticRule) (*types.LLMPolicy, error)
 	UpdateDraft(id, name, prompt, provider, model string, staticRules []types.StaticRule) (*types.LLMPolicy, error)
+	UpdateResponsePrompt(id, responsePrompt string) error
 	Publish(id string) (*types.LLMPolicy, error)
 	SetEndpointSummaries(id string, summaries []types.PolicyEndpointSummary) error
 	SetChatHistory(id string, history []types.ChatMessage) error
@@ -52,7 +53,7 @@ func scanPolicy(row interface {
 	var p types.LLMPolicy
 	var forkedFrom *string
 	err := row.Scan(
-		&p.ID, &p.Name, &p.Prompt, &p.Provider, &p.Model,
+		&p.ID, &p.Name, &p.Prompt, &p.ResponsePrompt, &p.Provider, &p.Model,
 		&p.Status, &forkedFrom, &p.StaticRules,
 		&p.CreatedAt, &p.DeletedAt,
 	)
@@ -65,7 +66,7 @@ func scanPolicy(row interface {
 	return &p, nil
 }
 
-const selectCols = `id, name, prompt, provider, model, status, forked_from, static_rules, created_at, deleted_at`
+const selectCols = `id, name, prompt, response_prompt, provider, model, status, forked_from, static_rules, created_at, deleted_at`
 
 // Get fetches a single policy by ID. Metadata is not included; call GetMetadata separately.
 func (s *PGStore) Get(id string) (*types.LLMPolicy, error) {
@@ -210,6 +211,23 @@ func (s *PGStore) UpdateDraft(id, name, prompt, provider, model string, staticRu
 		return nil, ErrPolicyNotDraft
 	}
 	return s.Get(id)
+}
+
+// UpdateResponsePrompt sets the response_prompt column on a draft policy.
+// Returns ErrPolicyNotDraft if the policy is not in draft status.
+func (s *PGStore) UpdateResponsePrompt(id, responsePrompt string) error {
+	ctx := context.Background()
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE llm_policies SET response_prompt=$2
+		WHERE id=$1 AND status='draft' AND deleted_at IS NULL
+	`, id, responsePrompt)
+	if err != nil {
+		return fmt.Errorf("UpdateResponsePrompt: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrPolicyNotDraft
+	}
+	return nil
 }
 
 // Publish transitions a draft policy to published status (one-way).

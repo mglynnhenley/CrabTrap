@@ -58,8 +58,9 @@ type TLSConfig struct {
 
 // ApprovalConfig contains approval flow settings
 type ApprovalConfig struct {
-	Mode         string        `yaml:"mode"` // "llm" | "passthrough" (default: "llm")
-	Timeout      time.Duration `yaml:"timeout"`
+	Mode             string        `yaml:"mode"` // "llm" | "passthrough" (default: "llm")
+	Timeout          time.Duration `yaml:"timeout"`
+	InspectResponses bool          `yaml:"inspect_responses"` // when true, judge upstream responses using policy.response_prompt
 }
 
 // LLMJudgeConfig contains settings for the LLM-as-judge approval path.

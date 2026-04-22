@@ -169,6 +169,7 @@ type LLMPolicy struct {
 	ID               string           `json:"id"`
 	Name             string           `json:"name"`
 	Prompt           string           `json:"prompt"`
+	ResponsePrompt   string           `json:"response_prompt,omitempty"` // empty string = skip response judging for this policy
 	Provider         string           `json:"provider"`         // "" = use gateway default
 	Model            string           `json:"model"`            // "" = use gateway default
 	Status           string           `json:"status"`           // "draft" | "published"
@@ -204,4 +205,7 @@ type AuditEntry struct {
 	LLMReason        string      `json:"llm_reason,omitempty"`       // Populated on read via JOIN to llm_responses; not stored
 	LLMResponseID    string      `json:"llm_response_id,omitempty"`  // FK to llm_responses; set when channel="llm"
 	LLMPolicyID      string      `json:"llm_policy_id,omitempty"`    // Policy that evaluated this request (set when channel="llm")
+	ResponseDecision      string `json:"response_decision,omitempty"`       // "approved" | "denied" when response judging ran
+	ResponseReason        string `json:"response_reason,omitempty"`         // Populated on read via JOIN to llm_responses
+	ResponseLLMResponseID string `json:"response_llm_response_id,omitempty"` // FK to llm_responses row for response judging
 }

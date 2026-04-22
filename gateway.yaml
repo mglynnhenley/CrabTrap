@@ -3,6 +3,7 @@ log_level: info
 approval:
   mode: llm
   timeout: 30s
+  inspect_responses: true
 
 database:
   url: "${DATABASE_URL}"

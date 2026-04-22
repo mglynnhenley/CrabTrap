@@ -38,10 +38,10 @@ const ContextKeyBufferedBody contextKey = "buffered_body"
 
 // Manager orchestrates the approval decision flow
 type Manager struct {
-	judge        *judge.LLMJudge // nil if LLM mode disabled
-	mode         string          // "llm" | "passthrough"
-	fallbackMode string          // "deny" | "passthrough"
-
+	judge            *judge.LLMJudge // nil if LLM mode disabled
+	mode             string          // "llm" | "passthrough"
+	fallbackMode     string          // "deny" | "passthrough"
+	inspectResponses bool            // when true, judge upstream responses via policy.ResponsePrompt
 }
 
 // NewManager creates a new approval manager.
@@ -237,6 +237,88 @@ func (m *Manager) UsesLLM() bool {
 // UsesPassthrough reports whether approvals are bypassed by configuration.
 func (m *Manager) UsesPassthrough() bool {
 	return m.mode == "passthrough"
+}
+
+// SetInspectResponses toggles response-side judging on or off.
+func (m *Manager) SetInspectResponses(v bool) {
+	m.inspectResponses = v
+}
+
+// UsesResponseInspection reports whether response bodies should be judged.
+// True only when in LLM mode with a judge configured and inspection enabled.
+func (m *Manager) UsesResponseInspection() bool {
+	return m.mode == "llm" && m.judge != nil && m.inspectResponses
+}
+
+// CheckResponseApproval judges an upstream response against policy.ResponsePrompt.
+// Returns (decision, true) when the judge ran. Returns (_, false) when the
+// policy opts out (no ResponsePrompt) or no policy is in context.
+func (m *Manager) CheckResponseApproval(ctx context.Context, method, rawURL string, status int, respHeaders http.Header, respBody string, requestID string) (types.ApprovalDecision, bool) {
+	if m.judge == nil {
+		return types.ApprovalDecision{}, false
+	}
+	policy, _ := ctx.Value(ContextKeyLLMPolicy).(*types.LLMPolicy)
+	if policy == nil || policy.ResponsePrompt == "" {
+		return types.ApprovalDecision{}, false
+	}
+
+	result, judgeErr := m.judge.EvaluateResponse(ctx, method, rawURL, status, respHeaders, respBody, *policy)
+	if judgeErr != nil {
+		slog.Error("LLM response judge error, using fallback", "request_id", requestID, "error", judgeErr, "fallback", m.fallbackMode)
+		ad := m.responseFallback()
+		ad.LLMPolicyID = policy.ID
+		if result.Model != "" {
+			ad.LLMResponse = judgeResultToLLMResponse(result, judgeErr)
+		}
+		return ad, true
+	}
+
+	llmResp := judgeResultToLLMResponse(result, nil)
+	switch result.Decision {
+	case types.DecisionAllow:
+		return types.ApprovalDecision{
+			Decision:    types.DecisionAllow,
+			ApprovedBy:  "llm",
+			Channel:     "llm",
+			Reason:      result.Reason,
+			LLMPolicyID: policy.ID,
+			LLMResponse: llmResp,
+		}, true
+	case types.DecisionDeny:
+		return types.ApprovalDecision{
+			Decision:    types.DecisionDeny,
+			ApprovedBy:  "llm",
+			Channel:     "llm",
+			Reason:      result.Reason,
+			LLMPolicyID: policy.ID,
+			LLMResponse: llmResp,
+		}, true
+	default:
+		slog.Warn("LLM response judge returned unexpected decision, using fallback", "request_id", requestID, "decision", result.Decision, "fallback", m.fallbackMode)
+		ad := m.responseFallback()
+		ad.LLMPolicyID = policy.ID
+		ad.LLMResponse = llmResp
+		return ad, true
+	}
+}
+
+// responseFallback returns the fallback decision for a failed response judge call,
+// mirroring llmFallback but without the request-specific plumbing.
+func (m *Manager) responseFallback() types.ApprovalDecision {
+	if m.fallbackMode == "passthrough" {
+		return types.ApprovalDecision{
+			Decision:   types.DecisionAllow,
+			ApprovedBy: "llm-fallback",
+			Channel:    "llm",
+			Reason:     "llm response judge unavailable, passthrough",
+		}
+	}
+	return types.ApprovalDecision{
+		Decision:   types.DecisionDeny,
+		ApprovedBy: "llm-fallback",
+		Channel:    "llm",
+		Reason:     "llm response judge unavailable",
+	}
 }
 
 // staticRuleMatches reports whether the given rule matches req.

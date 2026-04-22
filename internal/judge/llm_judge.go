@@ -101,6 +101,113 @@ func (j *LLMJudge) Evaluate(ctx context.Context, method, rawURL string, headers 
 	}
 }
 
+// EvaluateResponse calls the adapter and returns ALLOW or DENY for an HTTP response.
+// It uses policy.ResponsePrompt (not Prompt). If ResponsePrompt is empty the caller
+// should not invoke this method.
+func (j *LLMJudge) EvaluateResponse(ctx context.Context, method, rawURL string, status int, respHeaders http.Header, respBody string, policy types.LLMPolicy) (JudgeResult, error) {
+	partial := JudgeResult{Model: j.adapter.ModelID()}
+
+	resp, err := j.adapter.Complete(ctx, llm.Request{
+		System:            buildResponseSystemPrompt(policy.ResponsePrompt),
+		Messages:          []llm.Message{{Role: "user", Content: buildResponseUserMessage(method, rawURL, status, respHeaders, respBody)}},
+		MaxTokens:         512,
+		CacheSystemPrompt: true,
+	})
+	partial.DurationMs = resp.DurationMs
+	if err != nil {
+		partial.RawOutput = fmt.Sprintf("adapter complete failed: %v", err)
+		return partial, fmt.Errorf("adapter complete failed: %w", err)
+	}
+
+	partial.InputTokens = resp.InputTokens
+	partial.OutputTokens = resp.OutputTokens
+	partial.RawOutput = resp.Text
+
+	type decisionJSON struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+	}
+	var d decisionJSON
+	if err := json.Unmarshal([]byte(llm.StripCodeFences(resp.Text)), &d); err != nil {
+		return partial, fmt.Errorf("failed to parse decision JSON from model output: %w (response: %s)", err, resp.Text)
+	}
+
+	partial.Reason = d.Reason
+	d.Decision = strings.ToUpper(strings.TrimSpace(d.Decision))
+	switch types.DecisionType(d.Decision) {
+	case types.DecisionAllow:
+		partial.Decision = types.DecisionAllow
+		return partial, nil
+	case types.DecisionDeny:
+		partial.Decision = types.DecisionDeny
+		return partial, nil
+	default:
+		return partial, fmt.Errorf("unknown decision %q from model", d.Decision)
+	}
+}
+
+// buildResponseSystemPrompt constructs the system prompt for response judging.
+// Mirrors buildSystemPrompt but explicitly frames the task as inspecting the
+// upstream response.
+func buildResponseSystemPrompt(policyPrompt string) string {
+	policyJSON, _ := json.Marshal(policyPrompt)
+	return `You are a security policy enforcement agent. You will receive an HTTP response (from an upstream API, returned to an AI agent) as a structured JSON object and must decide whether it is ALLOWED or DENIED. Block responses whose content violates the policy.
+
+The policy to enforce is provided below as a JSON-encoded string. Parse the string value to read the policy:
+{"policy":` + string(policyJSON) + `}
+
+Respond ONLY with valid JSON in this exact format (no other text):
+{"decision":"ALLOW","reason":"brief explanation"}
+or
+{"decision":"DENY","reason":"brief explanation"}`
+}
+
+// responseJSON describes an HTTP response for the judge.
+type responseJSON struct {
+	Method   string            `json:"request_method"`
+	URL      string            `json:"request_url"`
+	Status   int               `json:"response_status"`
+	Headers  map[string]string `json:"response_headers"`
+	Body     string            `json:"response_body,omitempty"`
+	Warnings []string          `json:"warnings,omitempty"`
+}
+
+// buildResponseUserMessage mirrors buildUserMessage but for a response payload.
+// Request method+URL are included so the judge sees what the response is for.
+func buildResponseUserMessage(method, rawURL string, status int, headers http.Header, body string) string {
+	r := responseJSON{
+		Method:  method,
+		Status:  status,
+		Headers: make(map[string]string),
+	}
+	var warnings []string
+	if len(rawURL) > maxURLBytes {
+		r.URL = rawURL[:maxURLBytes]
+		warnings = append(warnings, fmt.Sprintf("URL truncated at %d of %d characters", maxURLBytes, len(rawURL)))
+	} else {
+		r.URL = rawURL
+	}
+	headerMap, headerWarning := buildHeaderMap(headers)
+	r.Headers = headerMap
+	if headerWarning != "" {
+		warnings = append(warnings, headerWarning)
+	}
+	if len(body) > maxBodyBytes {
+		r.Body = body[:maxBodyBytes]
+		warnings = append(warnings, fmt.Sprintf(
+			"Response body truncated at %d of %d bytes — content beyond this point was NOT evaluated. Exercise caution.",
+			maxBodyBytes, len(body),
+		))
+	} else {
+		r.Body = body
+	}
+	if len(warnings) > 0 {
+		r.Warnings = warnings
+	}
+	out, _ := json.Marshal(r)
+	return string(out)
+}
+
 // buildSystemPrompt constructs the system prompt for the judge.
 //
 // The policy is embedded as a JSON-escaped value inside a structured JSON object.

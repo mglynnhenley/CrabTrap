@@ -1567,18 +1567,40 @@ func (h *Handler) processRequest(r *http.Request, requestID string, startTime ti
 	// Restore response body so it can be used by caller
 	resp.Body = io.NopCloser(bytes.NewReader(responseBody))
 
+	// Response-side LLM judge. Run only when inspection is enabled, a policy is in
+	// context, and that policy sets a ResponsePrompt. On DENY we replace the
+	// client-facing response with a 403; upstream bytes are still preserved in the
+	// audit entry for debugging.
+	var respDecision types.ApprovalDecision
+	var respLLMResponseID string
+	responseInspected := false
+	clientResp := resp
+	if h.approvalManager.UsesResponseInspection() {
+		if rd, inspected := h.approvalManager.CheckResponseApproval(ctx, r.Method, r.URL.String(), resp.StatusCode, resp.Header, string(loggableBody), requestID); inspected {
+			responseInspected = true
+			respDecision = rd
+			respLLMResponseID = h.persistLLMResponse(requestID, rd.LLMResponse)
+			if rd.Decision == types.DecisionDeny {
+				clientResp = errorResponse(http.StatusForbidden, "text/plain", fmt.Sprintf("Response blocked by policy: %s", rd.Reason))
+			}
+		}
+	}
+
 	// Log audit
 	e := newEntry(requestID, r, originalHeaders, startTime, requestUserID)
 	e.Decision = "approved"
 	e.CacheHit = decision.ApprovedBy == "cache"
-	e.ResponseStatus = resp.StatusCode
+	e.ResponseStatus = clientResp.StatusCode
 	e.RequestBody = truncateBodyForAudit(originalRequestBody)
 	e.ResponseHeaders = resp.Header.Clone()
 	e.ResponseBody = string(loggableBody)
 	applyDecision(&e, decision, llmResponseID, decision.Reason)
+	if responseInspected {
+		applyResponseDecision(&e, respDecision, respLLMResponseID)
+	}
 	h.logEntry(e)
 
-	return resp
+	return clientResp
 }
 
 // persistLLMResponse creates an llm_responses row if the judge ran and a writer
@@ -1622,6 +1644,18 @@ func applyDecision(e *types.AuditEntry, d types.ApprovalDecision, llmResponseID,
 	e.LLMPolicyID = d.LLMPolicyID
 	e.LLMResponseID = llmResponseID
 	e.LLMReason = llmReason // for SSE broadcast; not stored in DB column
+}
+
+// applyResponseDecision copies the response-side judge outcome onto an entry.
+func applyResponseDecision(e *types.AuditEntry, d types.ApprovalDecision, llmResponseID string) {
+	switch d.Decision {
+	case types.DecisionAllow:
+		e.ResponseDecision = "approved"
+	case types.DecisionDeny:
+		e.ResponseDecision = "denied"
+	}
+	e.ResponseReason = d.Reason
+	e.ResponseLLMResponseID = llmResponseID
 }
 
 // logEntry dispatches a fully-built audit entry to the DB reader, SSE, and audit file.
