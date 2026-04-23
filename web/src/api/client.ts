@@ -106,7 +106,7 @@ export async function createPolicy(req: { name: string; prompt?: string; provide
   return fetchAPI<LLMPolicy>('/llm-policies', { method: 'POST', body: JSON.stringify(req) })
 }
 
-export async function updateDraftPolicy(id: string, req: { name: string; prompt: string; provider: string; model: string; static_rules: StaticRule[] }): Promise<LLMPolicy> {
+export async function updateDraftPolicy(id: string, req: { name: string; prompt: string; provider: string; model: string; static_rules: StaticRule[]; response_prompt?: string; response_prompt_set?: boolean }): Promise<LLMPolicy> {
   return fetchAPI<LLMPolicy>(`/llm-policies/${id}`, { method: 'PUT', body: JSON.stringify(req) })
 }
 

@@ -21,6 +21,9 @@ export interface AuditEntry {
   llm_reason?: string         // populated on read via JOIN to llm_responses
   llm_response_id?: string    // FK to llm_responses
   llm_policy_id?: string
+  response_decision?: string
+  response_reason?: string
+  response_llm_response_id?: string
 }
 
 export interface SSEEvent {
@@ -92,6 +95,7 @@ export interface LLMPolicy {
   id: string
   name: string
   prompt: string
+  response_prompt?: string
   provider: string
   model: string
   status: 'draft' | 'published'

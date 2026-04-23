@@ -433,7 +433,7 @@ export function AuditTrail() {
                     {isExpanded && (
                       <tr key={`${rowId}-expanded`}>
                         <td colSpan={7} className="px-6 py-4 bg-gray-50">
-                          {/* LLM Judge */}
+                          {/* LLM Judge (request) */}
                           {entry.channel === 'llm' && entry.llm_response_id && (
                             <LLMResponseBlock
                               llmResponseId={entry.llm_response_id}
@@ -444,6 +444,20 @@ export function AuditTrail() {
                             <div className="mb-4 p-3 bg-purple-50 border border-purple-200 rounded">
                               <h4 className="text-sm font-semibold text-purple-900 mb-1">LLM Judge Reasoning</h4>
                               <p className="text-xs text-purple-800">{entry.llm_reason}</p>
+                            </div>
+                          )}
+                          {/* LLM Judge (response) */}
+                          {entry.response_decision && (
+                            <div className="mb-4 p-3 bg-indigo-50 border border-indigo-200 rounded">
+                              <div className="mb-1 flex items-center gap-2">
+                                <h4 className="text-sm font-semibold text-indigo-900">Response Judge</h4>
+                                <span className={`px-2 py-0.5 rounded text-xs font-semibold ${entry.response_decision === 'denied' ? 'bg-red-100 text-red-800' : entry.response_decision === 'approved' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
+                                  {entry.response_decision}
+                                </span>
+                              </div>
+                              {entry.response_reason && (
+                                <p className="text-xs text-indigo-800 leading-relaxed">{entry.response_reason}</p>
+                              )}
                             </div>
                           )}
 

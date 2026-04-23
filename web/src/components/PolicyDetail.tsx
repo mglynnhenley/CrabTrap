@@ -162,6 +162,7 @@ function DraftEditor({ policy, metadata, onSaved, onPublished, onDeleted, initia
 
   const [name, setName] = useState(policy.name)
   const [prompt, setPrompt] = useState(policy.prompt)
+  const [responsePrompt, setResponsePrompt] = useState(policy.response_prompt ?? '')
   const [provider, setProvider] = useState(policy.provider)
   const [model, setModel] = useState(policy.model)
   const [rules, setRules] = useState<StaticRule[]>(policy.static_rules ?? [])
@@ -227,7 +228,7 @@ function DraftEditor({ policy, metadata, onSaved, onPublished, onDeleted, initia
     setSaving(true)
     setSaveErr(null)
     try {
-      const updated = await updateDraftPolicy(policy.id, { name, prompt, provider, model, static_rules: rules })
+      const updated = await updateDraftPolicy(policy.id, { name, prompt, provider, model, static_rules: rules, response_prompt: responsePrompt, response_prompt_set: true })
       onSaved(updated)
     } catch (err) {
       setSaveErr(err instanceof Error ? err.message : 'Failed to save')
@@ -240,7 +241,7 @@ function DraftEditor({ policy, metadata, onSaved, onPublished, onDeleted, initia
     if (!window.confirm('Publish this policy? It will become immutable.')) return
     setPublishing(true)
     try {
-      await updateDraftPolicy(policy.id, { name, prompt, provider, model, static_rules: rules })
+      await updateDraftPolicy(policy.id, { name, prompt, provider, model, static_rules: rules, response_prompt: responsePrompt, response_prompt_set: true })
       const published = await publishPolicy(policy.id)
       onPublished(published)
     } catch (err) {
@@ -379,6 +380,13 @@ function DraftEditor({ policy, metadata, onSaved, onPublished, onDeleted, initia
             <label className="block text-sm font-medium text-gray-700">Prompt</label>
             <textarea className={inputClass} value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={6}
               placeholder="Describe what the AI agent is and is not allowed to do..." />
+          </div>
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-700">
+              Response Prompt <span className="text-gray-400 font-normal">(optional)</span>
+            </label>
+            <textarea className={inputClass} value={responsePrompt} onChange={(e) => setResponsePrompt(e.target.value)} rows={4}
+              placeholder="If set, upstream responses are judged using this prompt (e.g. &quot;Deny if the response leaks secrets or PII&quot;). Leave empty to skip response inspection." />
           </div>
           <div className="space-y-1">
             <label className="block text-sm font-medium text-gray-700">Static Rules</label>
@@ -890,6 +898,12 @@ function PublishedView({ policy, onDeleted }: { policy: LLMPolicy; onDeleted: ()
           <div>
             <div className="text-sm text-gray-500 mb-1">Prompt</div>
             <pre className="bg-gray-50 rounded-lg p-3 text-xs text-gray-800 whitespace-pre-wrap leading-relaxed border border-gray-100 max-h-48 overflow-y-auto">{policy.prompt}</pre>
+          </div>
+        )}
+        {policy.response_prompt && (
+          <div>
+            <div className="text-sm text-gray-500 mb-1">Response Prompt</div>
+            <pre className="bg-gray-50 rounded-lg p-3 text-xs text-gray-800 whitespace-pre-wrap leading-relaxed border border-gray-100 max-h-48 overflow-y-auto">{policy.response_prompt}</pre>
           </div>
         )}
         {policy.static_rules && policy.static_rules.length > 0 && (
