@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/brexhq/CrabTrap/internal/judge"
 	"github.com/brexhq/CrabTrap/internal/llm"
 	"github.com/brexhq/CrabTrap/internal/probes"
 	"github.com/brexhq/CrabTrap/pkg/types"
@@ -49,8 +50,8 @@ func newProbeRunnerServer(t *testing.T, specs []probes.Spec, scores map[string][
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(probeResponseBody(scores))
 	}))
-	client := probes.NewClient(server.URL, "test-model", 5*time.Second, 32)
-	return probes.NewRunner(client, specs, 0), server
+	client := probes.NewClient(server.URL, "test-model", "", 5*time.Second, 32)
+	return probes.NewRunner(client, probes.StaticSpecs(specs), 0), server
 }
 
 // newProbeRunnerErrorServer returns a runner whose server always returns 500.
@@ -59,8 +60,8 @@ func newProbeRunnerErrorServer(t *testing.T, specs []probes.Spec) (*probes.Runne
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	client := probes.NewClient(server.URL, "test-model", 1*time.Second, 32)
-	return probes.NewRunner(client, specs, 0), server
+	client := probes.NewClient(server.URL, "test-model", "", 1*time.Second, 32)
+	return probes.NewRunner(client, probes.StaticSpecs(specs), 0), server
 }
 
 // --- Matrix cells ---
@@ -220,10 +221,12 @@ func TestProbes_LLM_ProbesUnderThreshold_JudgeAllowStands(t *testing.T) {
 	}
 }
 
-// Cell: mode=llm × probes=on, probe trip, judge ALLOW.
-// Probe DENY beats judge ALLOW.
-func TestProbes_LLM_ProbeTripWinsOverJudgeAllow(t *testing.T) {
-	m := newLLMManager(t, allowJudge(), "deny")
+// Cell: mode=llm × probes=on, probe trip → DENY and the judge is NEVER
+// invoked (the whole point of the probes-first flow). This replaces the
+// earlier behaviour where probe+judge ran in parallel.
+func TestProbes_LLM_ProbeTripSkipsJudgeAndDenies(t *testing.T) {
+	var judgeCalls int
+	m := newLLMManager(t, countingJudge("ALLOW", &judgeCalls), "deny")
 	runner, server := newProbeRunnerServer(t,
 		[]probes.Spec{{Name: "exfiltration", Threshold: 0.5, Aggregation: "max"}},
 		map[string][]float64{"exfiltration": {0.95}},
@@ -237,14 +240,122 @@ func TestProbes_LLM_ProbeTripWinsOverJudgeAllow(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if decision.Decision != types.DecisionDeny {
-		t.Errorf("probe trip should DENY despite judge ALLOW, got %v", decision.Decision)
+		t.Errorf("probe trip should DENY, got %v", decision.Decision)
 	}
 	if decision.ApprovedBy != "probe:exfiltration" {
 		t.Errorf("expected approvedBy=probe:exfiltration, got %q", decision.ApprovedBy)
 	}
-	// Judge still ran — its response should be attached for audit.
-	if decision.LLMResponse == nil {
-		t.Error("expected LLMResponse attached when judge ran alongside probe trip")
+	if judgeCalls != 0 {
+		t.Errorf("judge must not be invoked when a probe trips, got %d calls", judgeCalls)
+	}
+	if decision.LLMResponse != nil {
+		t.Error("LLMResponse should be nil when the judge was skipped")
+	}
+}
+
+// Cell: mode=llm × probes=on, every probe at/below clear_threshold → ALLOW
+// and the judge is NEVER invoked. This is the main cost-saving path for
+// confidence-band gating.
+func TestProbes_LLM_AllClearSkipsJudgeAndAllows(t *testing.T) {
+	var judgeCalls int
+	m := newLLMManager(t, countingJudge("DENY", &judgeCalls), "deny") // judge would DENY if called
+	runner, server := newProbeRunnerServer(t,
+		[]probes.Spec{
+			{Name: "exfiltration", Threshold: 0.8, ClearThreshold: 0.1, Aggregation: "max"},
+			{Name: "jailbreak", Threshold: 0.7, ClearThreshold: 0.1, Aggregation: "max"},
+		},
+		map[string][]float64{
+			"exfiltration": {0.02, 0.05},
+			"jailbreak":    {0.01, 0.09},
+		},
+	)
+	defer server.Close()
+	m.SetProbeRunner(runner)
+
+	req, _ := http.NewRequest("GET", "https://example.com", nil)
+	decision, _, err := m.CheckApproval(policyCtx("policy"), req, "req-allclear", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decision.Decision != types.DecisionAllow {
+		t.Errorf("expected ALLOW on all-clear, got %v", decision.Decision)
+	}
+	if decision.ApprovedBy != "probe:all-clear" {
+		t.Errorf("expected approvedBy=probe:all-clear, got %q", decision.ApprovedBy)
+	}
+	if decision.Channel != "probe" {
+		t.Errorf("expected channel=probe, got %q", decision.Channel)
+	}
+	if judgeCalls != 0 {
+		t.Errorf("judge must not be invoked when all probes are clear, got %d calls", judgeCalls)
+	}
+	if decision.LLMResponse != nil {
+		t.Error("LLMResponse should be nil when the judge was skipped")
+	}
+	if decision.ProbeScores["exfiltration"] != 0.05 {
+		t.Errorf("probe scores should be attached for audit, got %v", decision.ProbeScores)
+	}
+}
+
+// Cell: mode=llm × probes=on, any probe in the gray zone (above its
+// clear_threshold but below its fire threshold) → judge runs and decides.
+func TestProbes_LLM_GrayZoneFallsThroughToJudge(t *testing.T) {
+	var judgeCalls int
+	m := newLLMManager(t, countingJudge("ALLOW", &judgeCalls), "deny")
+	runner, server := newProbeRunnerServer(t,
+		[]probes.Spec{
+			{Name: "exfiltration", Threshold: 0.8, ClearThreshold: 0.1, Aggregation: "max"},
+			{Name: "jailbreak", Threshold: 0.7, ClearThreshold: 0.1, Aggregation: "max"},
+		},
+		map[string][]float64{
+			"exfiltration": {0.02},   // clear
+			"jailbreak":    {0.3},    // gray (> 0.1, < 0.7)
+		},
+	)
+	defer server.Close()
+	m.SetProbeRunner(runner)
+
+	req, _ := http.NewRequest("GET", "https://example.com", nil)
+	decision, _, err := m.CheckApproval(policyCtx("policy"), req, "req-gray", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decision.Decision != types.DecisionAllow || decision.ApprovedBy != "llm" {
+		t.Errorf("expected judge ALLOW in gray zone, got %+v", decision)
+	}
+	if judgeCalls != 1 {
+		t.Errorf("expected judge invoked exactly once, got %d calls", judgeCalls)
+	}
+	if decision.ProbeScores["jailbreak"] != 0.3 {
+		t.Errorf("probe scores should still be attached, got %v", decision.ProbeScores)
+	}
+}
+
+// Cell: mode=llm × probes=on, no spec has clear_threshold set → AllClear
+// never triggers; every non-tripped request goes to the judge (backward
+// compat with operators who haven't opted into judge-skip).
+func TestProbes_LLM_NoClearThreshold_AlwaysRunsJudge(t *testing.T) {
+	var judgeCalls int
+	m := newLLMManager(t, countingJudge("ALLOW", &judgeCalls), "deny")
+	runner, server := newProbeRunnerServer(t,
+		// Threshold 0.8, no ClearThreshold. Scores way below 0.8 but AllClear
+		// must stay false because the operator hasn't opted in.
+		[]probes.Spec{{Name: "exfiltration", Threshold: 0.8, Aggregation: "max"}},
+		map[string][]float64{"exfiltration": {0.01}},
+	)
+	defer server.Close()
+	m.SetProbeRunner(runner)
+
+	req, _ := http.NewRequest("GET", "https://example.com", nil)
+	decision, _, err := m.CheckApproval(policyCtx("policy"), req, "req-noclear", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decision.Decision != types.DecisionAllow || decision.ApprovedBy != "llm" {
+		t.Errorf("expected judge ALLOW when no clear_threshold configured, got %+v", decision)
+	}
+	if judgeCalls != 1 {
+		t.Errorf("judge must run when no probe has clear_threshold, got %d calls", judgeCalls)
 	}
 }
 
@@ -338,7 +449,7 @@ func TestProbes_LLM_CircuitOpen_FallsThroughToJudge(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer errServer.Close()
-	client := probes.NewClient(errServer.URL, "test-model", 1*time.Second, 32,
+	client := probes.NewClient(errServer.URL, "test-model", "", 1*time.Second, 32,
 		llm.WithCircuitBreaker(3, 1*time.Hour),
 	)
 	for i := 0; i < 3; i++ {
@@ -347,7 +458,7 @@ func TestProbes_LLM_CircuitOpen_FallsThroughToJudge(t *testing.T) {
 	if !client.IsOpen() {
 		t.Fatal("precondition: breaker should be open")
 	}
-	runner := probes.NewRunner(client, []probes.Spec{{Name: "x", Threshold: 0.5, Aggregation: "max"}}, 0)
+	runner := probes.NewRunner(client, probes.StaticSpecs([]probes.Spec{{Name: "x", Threshold: 0.5, Aggregation: "max"}}), 0)
 	m.SetProbeRunner(runner)
 
 	req, _ := http.NewRequest("GET", "https://example.com", nil)
@@ -360,6 +471,105 @@ func TestProbes_LLM_CircuitOpen_FallsThroughToJudge(t *testing.T) {
 	}
 	if !decision.ProbeCircuitOpen {
 		t.Error("expected ProbeCircuitOpen=true in audit")
+	}
+}
+
+// stubResolver is a minimal PolicyResolver that returns a fixed policy or an
+// error keyed by ID. Tests use it without bringing in the llmpolicy package.
+type stubResolver struct {
+	policies map[string]*types.LLMPolicy
+	err      error
+}
+
+func (r *stubResolver) Get(id string) (*types.LLMPolicy, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	p, ok := r.policies[id]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return p, nil
+}
+
+// capturingJudge records the system prompt seen on each call so tests can
+// assert which policy actually drove the judge.
+func capturingJudge(decision string, captured *[]string) *judge.LLMJudge {
+	return judge.NewLLMJudge(&llm.TestAdapter{Fn: func(req llm.Request) (llm.Response, error) {
+		*captured = append(*captured, req.System)
+		return llm.Response{Text: `{"decision":"` + decision + `","reason":"ok"}`}, nil
+	}})
+}
+
+// Cell: per-probe escalation. A gray-zone probe with JudgePolicyID set
+// causes the manager to swap the user's policy for the resolved one when
+// invoking the judge. Audit fields surface the override.
+func TestProbes_LLM_GrayZone_EscalatesToPerProbeJudgePolicy(t *testing.T) {
+	var prompts []string
+	m := newLLMManager(t, capturingJudge("DENY", &prompts), "deny")
+
+	override := &types.LLMPolicy{ID: "llmpol_jb", Prompt: "specialised jailbreak rules"}
+	m.SetPolicyResolver(&stubResolver{policies: map[string]*types.LLMPolicy{
+		"llmpol_jb": override,
+	}})
+
+	runner, server := newProbeRunnerServer(t,
+		[]probes.Spec{
+			{Name: "jailbreak", Threshold: 0.8, ClearThreshold: 0.1, Aggregation: "max", JudgePolicyID: "llmpol_jb"},
+		},
+		map[string][]float64{"jailbreak": {0.4}}, // gray zone
+	)
+	defer server.Close()
+	m.SetProbeRunner(runner)
+
+	req, _ := http.NewRequest("POST", "https://example.com/api", bytes.NewReader([]byte(`{"q":"x"}`)))
+	decision, _, err := m.CheckApproval(policyCtxWithID("llmpol_user", "user policy"), req, "req-esc", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decision.Decision != types.DecisionDeny || decision.ApprovedBy != "llm" {
+		t.Errorf("expected judge DENY, got %+v", decision)
+	}
+	if decision.LLMPolicyID != "llmpol_jb" {
+		t.Errorf("LLMPolicyID = %q, want llmpol_jb (the override)", decision.LLMPolicyID)
+	}
+	if len(prompts) != 1 {
+		t.Fatalf("expected one judge call, got %d", len(prompts))
+	}
+	if !strings.Contains(prompts[0], "specialised jailbreak rules") {
+		t.Errorf("judge system prompt should embed override policy, got %q", prompts[0])
+	}
+	if strings.Contains(prompts[0], "user policy") {
+		t.Errorf("judge system prompt should NOT include user policy when override active, got %q", prompts[0])
+	}
+}
+
+// Cell: per-probe escalation falls back to the user's policy when the
+// resolver returns an error.
+func TestProbes_LLM_GrayZone_EscalationLookupFails_UsesUserPolicy(t *testing.T) {
+	var prompts []string
+	m := newLLMManager(t, capturingJudge("ALLOW", &prompts), "deny")
+	m.SetPolicyResolver(&stubResolver{err: errors.New("db down")})
+
+	runner, server := newProbeRunnerServer(t,
+		[]probes.Spec{
+			{Name: "jailbreak", Threshold: 0.8, ClearThreshold: 0.1, Aggregation: "max", JudgePolicyID: "missing"},
+		},
+		map[string][]float64{"jailbreak": {0.4}},
+	)
+	defer server.Close()
+	m.SetProbeRunner(runner)
+
+	req, _ := http.NewRequest("GET", "https://example.com", nil)
+	decision, _, err := m.CheckApproval(policyCtxWithID("llmpol_user", "user policy"), req, "req-esc-err", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decision.LLMPolicyID != "llmpol_user" {
+		t.Errorf("LLMPolicyID = %q, want llmpol_user (fallback)", decision.LLMPolicyID)
+	}
+	if len(prompts) != 1 || !strings.Contains(prompts[0], "user policy") {
+		t.Errorf("judge should be invoked with user policy on lookup failure, got %v", prompts)
 	}
 }
 

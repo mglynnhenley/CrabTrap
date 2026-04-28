@@ -92,9 +92,10 @@ type LLMJudgeConfig struct {
 // scores collapse to a single number. Name must match the key probe-demo
 // returns in its response scores map (derived from the checkpoint filename).
 type ProbeSpec struct {
-	Name        string  `yaml:"name"`
-	Threshold   float64 `yaml:"threshold"`   // trip when aggregated score >= threshold; must be in [0, 1]
-	Aggregation string  `yaml:"aggregation"` // "max" (default) | "mean"
+	Name           string  `yaml:"name"`
+	Threshold      float64 `yaml:"threshold"`       // fire line: DENY when aggregated score >= threshold; must be in [0, 1]
+	ClearThreshold float64 `yaml:"clear_threshold"` // optional confident-benign line: when set (>0), scores <= clear_threshold count as "clear" for the judge-skip path. Must satisfy 0 < clear <= threshold.
+	Aggregation    string  `yaml:"aggregation"`     // "max" (default) | "mean"
 }
 
 // ProbesConfig contains settings for the probe-demo evaluator. Probes run in
@@ -105,8 +106,10 @@ type ProbeSpec struct {
 // (passthrough + probes.enabled=true) or judge-only (llm + probes.enabled=false).
 type ProbesConfig struct {
 	Enabled                 bool          `yaml:"enabled"`
-	Endpoint                string        `yaml:"endpoint"`                  // probe-demo base URL, e.g. http://localhost:8000
+	Endpoint                string        `yaml:"endpoint"`                  // probe service base URL, e.g. http://localhost:8000
+	Protocol                string        `yaml:"protocol"`                  // "probe_demo" (default) or "modal" — selects request shape & response parser
 	Model                   string        `yaml:"model"`                     // model ID passed to probe-demo (must match the server's loaded model)
+	APIKey                  string        `yaml:"api_key"`                   // optional; sent as Authorization: Bearer. Empty = no header (local probe-demo ignores auth)
 	Timeout                 time.Duration `yaml:"timeout"`                   // default 10s
 	MaxTokens               int           `yaml:"max_tokens"`                // generation cap sent to probe-demo; default 32
 	MaxBodyBytes            int           `yaml:"max_body_bytes"`            // request-body cap when serialising to probe-demo; default 8192
@@ -282,6 +285,9 @@ func (c *Config) applyDefaults() {
 	if c.Probes.CircuitBreakerCooldown == 0 {
 		c.Probes.CircuitBreakerCooldown = 10 * time.Second
 	}
+	if c.Probes.Protocol == "" {
+		c.Probes.Protocol = "probe_demo"
+	}
 	for i := range c.Probes.Probes {
 		if c.Probes.Probes[i].Aggregation == "" {
 			c.Probes.Probes[i].Aggregation = "max"
@@ -366,6 +372,11 @@ func (c *Config) validate() error {
 		if c.Probes.Endpoint == "" {
 			return fmt.Errorf("probes.endpoint is required when probes.enabled is true")
 		}
+		switch c.Probes.Protocol {
+		case "probe_demo", "modal":
+		default:
+			return fmt.Errorf("probes.protocol must be one of: probe_demo, modal (got %q)", c.Probes.Protocol)
+		}
 		if c.Probes.Model == "" {
 			return fmt.Errorf("probes.model is required when probes.enabled is true")
 		}
@@ -383,6 +394,12 @@ func (c *Config) validate() error {
 			seen[p.Name] = struct{}{}
 			if p.Threshold < 0 || p.Threshold > 1 {
 				return fmt.Errorf("probes.probes[%d] (%s) threshold must be in [0, 1] (got %v)", i, p.Name, p.Threshold)
+			}
+			if p.ClearThreshold < 0 || p.ClearThreshold > 1 {
+				return fmt.Errorf("probes.probes[%d] (%s) clear_threshold must be in [0, 1] (got %v)", i, p.Name, p.ClearThreshold)
+			}
+			if p.ClearThreshold > 0 && p.ClearThreshold > p.Threshold {
+				return fmt.Errorf("probes.probes[%d] (%s) clear_threshold (%v) must be <= threshold (%v)", i, p.Name, p.ClearThreshold, p.Threshold)
 			}
 			switch p.Aggregation {
 			case "max", "mean":

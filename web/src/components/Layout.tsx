@@ -6,6 +6,7 @@ const navLinks = [
   { to: '/',        label: 'Audit Trail', end: true },
   { to: '/users',   label: 'Users' },
   { to: '/policies',label: 'Policies' },
+  { to: '/probes',  label: 'Probes' },
   { to: '/evals',   label: 'Evals' },
 ]
 

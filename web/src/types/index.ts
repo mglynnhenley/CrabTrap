@@ -121,6 +121,55 @@ export interface ChatMessage {
   tool_result?: ToolResultRecord
 }
 
+// ---- Probe types ----
+
+export interface Probe {
+  name: string
+  enabled: boolean
+  threshold: number
+  clear_threshold?: number | null
+  aggregation: 'max' | 'mean'
+  judge_policy_id?: string | null
+  priority: number
+  created_at: string
+  updated_at: string
+}
+
+export interface UpsertProbeRequest {
+  enabled: boolean
+  threshold: number
+  clear_threshold?: number | null
+  aggregation: 'max' | 'mean'
+  judge_policy_id?: string | null
+  priority: number
+}
+
+// PolicyProbe is one row in the policy_probes join table — a probe attached
+// to a specific LLM policy with that policy's own tuning. Mirrors the Go
+// probes.PolicyProbe shape.
+export interface PolicyProbe {
+  policy_id: string
+  probe_name: string
+  enabled: boolean
+  threshold: number
+  clear_threshold?: number | null
+  aggregation: 'max' | 'mean'
+  judge_policy_id?: string | null
+  priority: number
+  created_at: string
+  updated_at: string
+}
+
+export interface UpsertPolicyProbeRequest {
+  probe_name: string
+  enabled: boolean
+  threshold: number
+  clear_threshold?: number | null
+  aggregation: 'max' | 'mean'
+  judge_policy_id?: string | null
+  priority: number
+}
+
 // ---- User management types ----
 
 export interface UserSummary {

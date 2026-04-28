@@ -18,6 +18,7 @@ import (
 	"github.com/brexhq/CrabTrap/internal/judge"
 	"github.com/brexhq/CrabTrap/internal/llmpolicy"
 	"github.com/brexhq/CrabTrap/internal/notifications"
+	"github.com/brexhq/CrabTrap/internal/probes"
 	"github.com/brexhq/CrabTrap/internal/builder"
 	"github.com/brexhq/CrabTrap/pkg/types"
 )
@@ -44,6 +45,8 @@ type API struct {
 	tokenValidator WebTokenValidator    // may be nil
 	userStore      UserStore            // may be nil
 	policyStore    llmpolicy.Store      // may be nil
+	probesStore    probes.Store         // may be nil
+	probeDiscoverer ProbeDiscoverer     // may be nil
 	evalStore      eval.Store           // may be nil
 	evalJudge      *judge.LLMJudge      // may be nil — used only for eval background runs
 	agent          *builder.PolicyAgent  // may be nil — used by agent endpoint
@@ -69,6 +72,23 @@ func NewAPI(reader AuditReaderIface, dispatcher *notifications.Dispatcher, sseCh
 // SetLLMPolicyStore configures the policy store used by the policy endpoints.
 func (a *API) SetLLMPolicyStore(s llmpolicy.Store) {
 	a.policyStore = s
+}
+
+// SetProbesStore configures the probes store used by the probe endpoints.
+func (a *API) SetProbesStore(s probes.Store) {
+	a.probesStore = s
+}
+
+// ProbeDiscoverer returns the probe names served by the upstream
+// probe-demo. Implemented by *probes.Client.
+type ProbeDiscoverer interface {
+	Discover(ctx context.Context) ([]string, error)
+}
+
+// SetProbeDiscoverer configures the discovery source used by the
+// /admin/probes/discover endpoint.
+func (a *API) SetProbeDiscoverer(d ProbeDiscoverer) {
+	a.probeDiscoverer = d
 }
 
 // SetEvalRunner configures the eval store and judge used by the eval endpoints.
@@ -193,6 +213,13 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	// POST /admin/llm-policies/{id}/chat   (deprecated alias for agent)
 	mux.HandleFunc("/admin/llm-policies", a.handleLLMPolicies)
 	mux.HandleFunc("/admin/llm-policies/", a.handleLLMPolicyAction)
+
+	// Probes endpoints
+	// GET /admin/probes
+	// GET/PUT/DELETE /admin/probes/{name}
+	mux.HandleFunc("/admin/probes", a.handleProbes)
+	mux.HandleFunc("/admin/probes/discover", a.handleProbeDiscover)
+	mux.HandleFunc("/admin/probes/", a.handleProbeAction)
 
 	// Eval endpoints
 	mux.HandleFunc("/admin/evals", a.handleEvals)
@@ -778,6 +805,13 @@ func (a *API) handleLLMPolicyAction(w http.ResponseWriter, r *http.Request) {
 		}
 		slog.Info("Admin API: soft-deleted llm_policy", "policy_id", id)
 		w.WriteHeader(http.StatusNoContent)
+
+	case action == "probes" || strings.HasPrefix(action, "probes/"):
+		// Phase 3: per-policy probe attachments. Subroutes are
+		//   GET    /admin/llm-policies/{id}/probes               → list
+		//   PUT    /admin/llm-policies/{id}/probes               → upsert one (body has probe_name)
+		//   DELETE /admin/llm-policies/{id}/probes/{probe_name}  → detach one
+		a.handlePolicyProbes(w, r, id, action)
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

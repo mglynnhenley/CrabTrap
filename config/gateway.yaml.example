@@ -83,14 +83,25 @@ llm_judge:
   #   thinking_model: gpt-4o
   #   openai_api_key: "${OPENAI_API_KEY}"
 
-# Probe evaluator: runs trained activation probes against each request in
-# parallel with the LLM judge. Probes encode fixed policies (exfiltration,
-# jailbreak, ...) so config is global, not per-user.
+# Probe evaluator: runs trained activation probes against each request as a
+# cheap pre-filter in front of the LLM judge. Probes encode fixed policies
+# (exfiltration, jailbreak, ...) so config is global, not per-user.
+#
+# Decision flow (when probes.enabled=true and approval.mode=llm):
+#   probe score >= threshold        → DENY, judge skipped
+#   every probe at/below clear_threshold → ALLOW, judge skipped
+#   otherwise (any probe in the gray zone, or probes errored / circuit open)
+#                                   → judge runs and decides
+#
+# This makes Claude the tie-breaker for ambiguous traffic rather than a cost
+# on every request. Leave clear_threshold unset on a probe to force every
+# non-tripped request into the judge path for that probe (safe default while
+# you're still calibrating).
 #
 # Toggled independently of approval.mode — all four combinations are valid:
 #   llm          + probes.enabled:false  = judge only (default)
-#   llm          + probes.enabled:true   = judge + probes (probe DENY wins over judge ALLOW)
-#   passthrough  + probes.enabled:true   = probes only
+#   llm          + probes.enabled:true   = probes-first, judge on ambiguity
+#   passthrough  + probes.enabled:true   = probes-only (DENY on fire, ALLOW otherwise)
 #   passthrough  + probes.enabled:false  = fully open (audit-log only)
 #
 # The probe server (probe-demo) must be launched with
@@ -102,7 +113,9 @@ llm_judge:
 probes:
   enabled: false
   endpoint: http://localhost:8000
-  model: meta-llama/Llama-3.1-8B-Instruct   # must match the model probe-demo is serving
+  protocol: probe_demo                      # probe_demo (default — local Qwen + activation probes) | modal (Modal-hosted probe API: assistant-role request, probe verdict response)
+  model: meta-llama/Llama-3.1-8B-Instruct   # must match the model probe-demo is serving; use "default" for any single-model server
+  # api_key: "${PROBE_API_KEY}"             # optional; sent as Authorization: Bearer. Leave unset for the local probe-demo server.
   timeout: 10s                              # per-request timeout to probe-demo
   max_tokens: 32                            # generation cap; probes activate within a few tokens
   max_body_bytes: 8192                      # request-body cap sent to probe-demo (half the judge's 16384)
@@ -110,11 +123,18 @@ probes:
   circuit_breaker_threshold: 5              # consecutive failures before the breaker opens
   circuit_breaker_cooldown: 10s             # cooldown before the breaker half-opens
   probes:
-    # Any aggregated score >= threshold trips DENY with approved_by="probe:<name>".
-    # aggregation: "max" (default — any single hot token trips) | "mean" (average over output tokens).
+    # threshold       — aggregated score >= threshold trips DENY (approved_by="probe:<name>").
+    # clear_threshold — optional; when set (and every probe is at/below its own clear_threshold),
+    #                   the request ALLOWs with approved_by="probe:all-clear" and the judge is
+    #                   skipped. Must satisfy 0 < clear_threshold <= threshold. Leave unset to
+    #                   always fall through to the judge on non-tripped requests (safer default
+    #                   while probe calibration is still in flux).
+    # aggregation     — "max" (default — any single hot token trips) | "mean" (average over output tokens).
     - name: exfiltration
       threshold: 0.8
+      clear_threshold: 0.1
       aggregation: max
     - name: jailbreak
       threshold: 0.7
+      clear_threshold: 0.1
       aggregation: max

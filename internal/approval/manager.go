@@ -37,12 +37,20 @@ const ContextKeyOriginalBody contextKey = "original_body"
 // large uploads may still have an unread streaming tail attached to req.Body.
 const ContextKeyBufferedBody contextKey = "buffered_body"
 
+// PolicyResolver looks up an LLM policy by ID. Used by Manager to resolve
+// per-probe judge escalation policies without depending on the llmpolicy
+// package directly.
+type PolicyResolver interface {
+	Get(id string) (*types.LLMPolicy, error)
+}
+
 // Manager orchestrates the approval decision flow
 type Manager struct {
-	judge        *judge.LLMJudge // nil if LLM mode disabled
-	probeRunner  *probes.Runner  // nil when probes are disabled
-	mode         string          // "llm" | "passthrough"
-	fallbackMode string          // "deny" | "passthrough"
+	judge          *judge.LLMJudge // nil if LLM mode disabled
+	probeRunner    *probes.Runner  // nil when probes are disabled
+	policyResolver PolicyResolver  // nil when per-probe escalation is unavailable
+	mode           string          // "llm" | "passthrough"
+	fallbackMode   string          // "deny" | "passthrough"
 }
 
 // NewManager creates a new approval manager.
@@ -74,18 +82,27 @@ func (m *Manager) SetProbeRunner(r *probes.Runner) {
 	m.probeRunner = r
 }
 
+// SetPolicyResolver wires a lookup used to resolve per-probe judge
+// escalation policies. When a probe lands in its own gray zone with a
+// non-empty JudgePolicyID, the manager swaps the user's policy for the
+// resolved one before calling the judge. Pass nil to disable escalation.
+func (m *Manager) SetPolicyResolver(r PolicyResolver) {
+	m.policyResolver = r
+}
+
 // CheckApproval decides whether req should be allowed.
 //
 // Flow:
 //  1. Static rules (from the loaded policy, when present) short-circuit
 //     before any model call — deny beats allow.
-//  2. The LLM judge (when mode=llm and a policy is loaded) and the probe
-//     runner (when configured) run in parallel under a WaitGroup. Probe
-//     errors are non-fatal so errgroup's context cancellation would be
-//     wrong here.
-//  3. Reconciliation: a tripped probe DENIES regardless of the judge's
-//     verdict. Otherwise the judge (if it ran) decides; otherwise probes-only
-//     passing → ALLOW; otherwise fall back to mode defaults.
+//  2. Probes run first when configured. A tripped probe DENIES without
+//     consulting the judge; an AllClear probe result (every spec has a
+//     positive ClearThreshold and every score is at/below it) ALLOWS
+//     without the judge. These two paths are the cost-saving wins:
+//     the cheap local model decides, Claude is never called.
+//  3. The LLM judge runs only when probes were ambiguous, errored, the
+//     circuit breaker was open, or probes are disabled. This keeps the
+//     judge as the oracle for the uncertain middle.
 //
 // Passthrough mode still invokes probes when configured — passthrough means
 // "no LLM judge," not "no policy evaluation."
@@ -156,63 +173,95 @@ func (m *Manager) CheckApproval(ctx context.Context, req *http.Request, requestI
 	judgeWillRun := m.mode == "llm" && m.judge != nil && policy != nil && policy.Prompt != ""
 
 	var (
-		wg           sync.WaitGroup
-		judgeResult  judge.JudgeResult
-		judgeErr     error
-		probeResult  probes.Result
-		probeErr     error
+		judgeResult judge.JudgeResult
+		judgeErr    error
+		probeResult probes.Result
+		probeErr    error
 	)
 
-	if judgeWillRun {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			judgeResult, judgeErr = m.judge.Evaluate(ctx, req.Method, req.URL.String(), evalHeaders, string(evalBody), *policy)
-		}()
-	}
+	// Probes run first (sequentially) so we can short-circuit the judge on
+	// decisive verdicts. See CheckApproval docstring for the rationale.
 	if probesEnabled {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			probeResult, probeErr = m.probeRunner.Evaluate(ctx, req.Method, req.URL.String(), evalHeaders, string(evalBody))
-		}()
-	}
-	wg.Wait()
-
-	if probesEnabled && probeErr != nil {
-		slog.Warn("probe runner error, falling through", "request_id", requestID, "error", probeErr)
-	}
-	if probesEnabled && probeResult.CircuitOpen {
-		slog.Warn("probe circuit breaker open, probes skipped for this request", "request_id", requestID)
-	}
-
-	// 1. Probe trip beats any judge verdict.
-	if probesEnabled && probeErr == nil && probeResult.Tripped != "" {
-		ad := types.ApprovalDecision{
-			Decision:   types.DecisionDeny,
-			ApprovedBy: "probe:" + probeResult.Tripped,
-			Channel:    "probe",
-			Reason:     fmt.Sprintf("probe %q tripped (score %.3f ≥ threshold)", probeResult.Tripped, probeResult.Scores[probeResult.Tripped]),
+		// policyID resolves the per-policy probe set (Phase 3). Empty when
+		// no policy is attached to the request; the runner falls back to the
+		// global probes table in that case.
+		var probePolicyID string
+		if policy != nil {
+			probePolicyID = policy.ID
 		}
-		if judgeWillRun && judgeErr == nil {
-			ad.LLMPolicyID = policy.ID
-			ad.LLMResponse = judgeResultToLLMResponse(judgeResult, nil)
-		} else if judgeWillRun {
-			ad.LLMPolicyID = policy.ID
-			if judgeResult.Model != "" {
-				ad.LLMResponse = judgeResultToLLMResponse(judgeResult, judgeErr)
+		probeResult, probeErr = m.probeRunner.Evaluate(ctx, req.Method, req.URL.String(), evalHeaders, string(evalBody), probePolicyID)
+		if probeErr != nil {
+			slog.Warn("probe runner error, falling through", "request_id", requestID, "error", probeErr)
+		}
+		if probeResult.CircuitOpen {
+			slog.Warn("probe circuit breaker open, probes skipped for this request", "request_id", requestID)
+		}
+
+		// 1a. Probe tripped → DENY, skip the judge entirely.
+		if probeErr == nil && probeResult.Tripped != "" {
+			ad := types.ApprovalDecision{
+				Decision:   types.DecisionDeny,
+				ApprovedBy: "probe:" + probeResult.Tripped,
+				Channel:    "probe",
+				Reason:     fmt.Sprintf("probe %q tripped (score %.3f ≥ threshold)", probeResult.Tripped, probeResult.Scores[probeResult.Tripped]),
+			}
+			if judgeWillRun {
+				ad.LLMPolicyID = policy.ID
+			}
+			attachProbeFields(&ad, probeResult)
+			return ad, body, nil
+		}
+
+		// 1b. All probes confidently clear → ALLOW, skip the judge. This is
+		// the main cost-saving path: benign traffic never pays for Claude.
+		if probeErr == nil && probeResult.AllClear {
+			ad := types.ApprovalDecision{
+				Decision:   types.DecisionAllow,
+				ApprovedBy: "probe:all-clear",
+				Channel:    "probe",
+				Reason:     "all probes at or below clear threshold",
+			}
+			if judgeWillRun {
+				ad.LLMPolicyID = policy.ID
+			}
+			attachProbeFields(&ad, probeResult)
+			return ad, body, nil
+		}
+	}
+
+	// 2. Judge path when the judge is eligible AND probes were ambiguous/
+	// errored/disabled. Probes already ran (sequentially, above) — no
+	// parallelism needed here.
+	if judgeWillRun {
+		// Per-probe escalation: if a probe in its own gray zone names a judge
+		// policy, swap the user's policy for it. The audit trail records the
+		// override (LLMPolicyID = override.ID) so it's clear which prompt
+		// actually decided the request. On lookup failure we fall back to the
+		// user's policy rather than denying — escalation is best-effort.
+		judgePolicy := policy
+		if probesEnabled && probeResult.GrayZonePolicyID != "" && m.policyResolver != nil {
+			override, err := m.policyResolver.Get(probeResult.GrayZonePolicyID)
+			if err != nil {
+				slog.Warn("per-probe judge policy lookup failed, using user policy",
+					"request_id", requestID,
+					"probe", probeResult.GrayZoneProbe,
+					"policy_id", probeResult.GrayZonePolicyID,
+					"error", err)
+			} else if override != nil && override.Prompt != "" {
+				slog.Debug("escalating gray-zone probe to per-probe judge policy",
+					"request_id", requestID,
+					"probe", probeResult.GrayZoneProbe,
+					"policy_id", override.ID)
+				judgePolicy = override
 			}
 		}
-		attachProbeFields(&ad, probeResult)
-		return ad, body, nil
-	}
 
-	// 2. Judge path when the judge ran.
-	if judgeWillRun {
+		judgeResult, judgeErr = m.judge.Evaluate(ctx, req.Method, req.URL.String(), evalHeaders, string(evalBody), *judgePolicy)
+
 		if judgeErr != nil {
 			slog.Error("LLM judge error, using fallback", "request_id", requestID, "error", judgeErr, "fallback", m.fallbackMode)
 			ad, b, ferr := m.llmFallback(ctx, req, requestID, apiInfo, body)
-			ad.LLMPolicyID = policy.ID
+			ad.LLMPolicyID = judgePolicy.ID
 			if judgeResult.Model != "" {
 				ad.LLMResponse = judgeResultToLLMResponse(judgeResult, judgeErr)
 			}
@@ -226,7 +275,7 @@ func (m *Manager) CheckApproval(ctx context.Context, req *http.Request, requestI
 			ApprovedBy:  "llm",
 			Channel:     "llm",
 			Reason:      judgeResult.Reason,
-			LLMPolicyID: policy.ID,
+			LLMPolicyID: judgePolicy.ID,
 			LLMResponse: llmResp,
 		}
 		switch judgeResult.Decision {
@@ -237,7 +286,7 @@ func (m *Manager) CheckApproval(ctx context.Context, req *http.Request, requestI
 		default:
 			slog.Warn("LLM judge returned unexpected decision, using fallback", "request_id", requestID, "decision", judgeResult.Decision, "fallback", m.fallbackMode)
 			fallback, b, ferr := m.llmFallback(ctx, req, requestID, apiInfo, body)
-			fallback.LLMPolicyID = policy.ID
+			fallback.LLMPolicyID = judgePolicy.ID
 			fallback.LLMResponse = llmResp
 			if probesEnabled {
 				attachProbeFields(&fallback, probeResult)

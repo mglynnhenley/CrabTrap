@@ -3,6 +3,8 @@ import type {
   UserSummary, UserDetail,
   CreateUserRequest, UpdateUserRequest,
   EvalRun, EvalResult, AuditLabel, LLMResponse, StaticRule, ChatMessage,
+  Probe, UpsertProbeRequest,
+  PolicyProbe, UpsertPolicyProbeRequest,
 } from '../types'
 
 const API_BASE = '/admin'
@@ -170,6 +172,50 @@ export async function getPolicyStats(id: string): Promise<PolicyStats> {
 
 export async function deletePolicy(id: string): Promise<void> {
   await fetchAPI(`/llm-policies/${id}`, { method: 'DELETE' })
+}
+
+// ---- Probes API ----
+
+export async function getProbes(): Promise<Probe[]> {
+  return fetchAPI<Probe[]>('/probes')
+}
+
+export async function getProbe(name: string): Promise<Probe> {
+  return fetchAPI<Probe>(`/probes/${encodeURIComponent(name)}`)
+}
+
+export async function upsertProbe(name: string, req: UpsertProbeRequest): Promise<Probe> {
+  return fetchAPI<Probe>(`/probes/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(req) })
+}
+
+export async function deleteProbe(name: string): Promise<void> {
+  await fetchAPI(`/probes/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}
+
+export async function discoverProbes(): Promise<{ names: string[] }> {
+  return fetchAPI<{ names: string[] }>('/probes/discover', { method: 'POST' })
+}
+
+// ---- Per-policy probe attachments ----
+
+export async function listPolicyProbes(policyId: string): Promise<PolicyProbe[]> {
+  return fetchAPI<PolicyProbe[]>(`/llm-policies/${encodeURIComponent(policyId)}/probes`)
+}
+
+// upsertPolicyProbe attaches a probe to a policy or re-tunes an existing
+// attachment. probe_name is in the body so a single endpoint covers both.
+export async function upsertPolicyProbe(policyId: string, req: UpsertPolicyProbeRequest): Promise<PolicyProbe> {
+  return fetchAPI<PolicyProbe>(`/llm-policies/${encodeURIComponent(policyId)}/probes`, {
+    method: 'PUT',
+    body: JSON.stringify(req),
+  })
+}
+
+export async function deletePolicyProbe(policyId: string, probeName: string): Promise<void> {
+  await fetchAPI(
+    `/llm-policies/${encodeURIComponent(policyId)}/probes/${encodeURIComponent(probeName)}`,
+    { method: 'DELETE' },
+  )
 }
 
 // ---- User management API ----

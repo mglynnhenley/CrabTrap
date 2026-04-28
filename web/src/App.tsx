@@ -6,6 +6,7 @@ import { UsersPanel } from './components/UsersPanel'
 import { UserDetailPage } from './components/UserDetailPage'
 import { PoliciesPanel } from './components/PoliciesPanel'
 import { PolicyDetail } from './components/PolicyDetail'
+import { ProbesPanel } from './components/ProbesPanel'
 import { LoginPage } from './components/LoginPage'
 import { EvalsPanel } from './components/EvalsPanel'
 import { EvalDetail } from './components/EvalDetail'
@@ -54,6 +55,7 @@ const router = createHashRouter([
       { path: 'users/:id', element: <UserDetailPage /> },
       { path: 'policies', element: <PoliciesPanel /> },
       { path: 'policies/:id', element: <PolicyDetail /> },
+      { path: 'probes', element: <ProbesPanel /> },
       { path: 'evals', element: <EvalsPanel /> },
       { path: 'evals/:id', element: <EvalDetail /> },
     ],

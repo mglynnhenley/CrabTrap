@@ -14,6 +14,7 @@ import type {
   UserSummary, StaticRule, ChatMessage,
 } from '../types'
 import { format } from 'date-fns'
+import { PolicyProbesEditor } from './PolicyProbesEditor'
 
 const inputClass = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
 const btnPrimary = 'px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50'
@@ -478,6 +479,9 @@ function DraftEditor({ policy, metadata, onSaved, onPublished, onDeleted, initia
         </div>
       </div>
 
+      {/* Per-policy probe attachments */}
+      <PolicyProbesEditor policyId={policy.id} />
+
       {/* Endpoint traffic context */}
       <EndpointViewer summaries={summaries} />
     </div>
@@ -899,6 +903,8 @@ function PublishedView({ policy, onDeleted }: { policy: LLMPolicy; onDeleted: ()
           </div>
         )}
       </div>
+
+      <PolicyProbesEditor policyId={policy.id} />
 
       {stats && (
         <>

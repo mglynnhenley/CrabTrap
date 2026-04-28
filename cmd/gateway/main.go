@@ -84,10 +84,43 @@ func main() {
 	pgUserStore := admin.NewPGUserStore(pool)
 	pgPolicyStore := llmpolicy.NewPGStore(pool)
 	pgEvalStore := eval.NewPGStore(pool)
+	pgProbeStore := probes.NewPGStore(pool)
+
+	// Seed the probes table from the YAML probe list on first startup. The
+	// admin UI is the source of truth thereafter; YAML acts as a one-shot
+	// bootstrap so existing deployments don't lose their config when the
+	// table appears.
+	if len(cfg.Probes.Probes) > 0 {
+		seedDefaults := make([]probes.UpsertProbeRequest, 0, len(cfg.Probes.Probes))
+		for i, s := range cfg.Probes.Probes {
+			var clear *float64
+			if s.ClearThreshold > 0 {
+				ct := s.ClearThreshold
+				clear = &ct
+			}
+			seedDefaults = append(seedDefaults, probes.UpsertProbeRequest{
+				Name:           s.Name,
+				Enabled:        true,
+				Threshold:      s.Threshold,
+				ClearThreshold: clear,
+				Aggregation:    s.Aggregation,
+				Priority:       i,
+			})
+		}
+		if seeded, err := pgProbeStore.SeedIfEmpty(ctx, seedDefaults); err != nil {
+			slog.Error("seed probes failed", "error", err)
+			os.Exit(1)
+		} else if seeded > 0 {
+			slog.Info("seeded probes from yaml", "count", seeded)
+		}
+	}
 
 	// Create approval manager.
 	approvalManager := approval.NewManager()
 	approvalManager.SetMode(cfg.Approval.Mode)
+	// Per-probe judge escalation reads policies through the same store the
+	// admin UI writes to.
+	approvalManager.SetPolicyResolver(pgPolicyStore)
 
 	proxyServer, err := proxy.NewServer(cfg, pgUserStore, approvalManager, pgAuditReader)
 	if err != nil {
@@ -149,34 +182,59 @@ func main() {
 	// Wire up probe evaluator if enabled. Probes are global (they encode their
 	// own policies) and run in parallel with the judge; any probe over its
 	// threshold DENIES regardless of the judge's verdict.
+	var probeDiscoverer admin.ProbeDiscoverer
 	if cfg.Probes.Enabled {
+		modalProbeNames := make([]string, 0, len(cfg.Probes.Probes))
+		for _, p := range cfg.Probes.Probes {
+			modalProbeNames = append(modalProbeNames, p.Name)
+		}
 		probeClient := probes.NewClient(
 			cfg.Probes.Endpoint,
 			cfg.Probes.Model,
+			cfg.Probes.APIKey,
 			cfg.Probes.Timeout,
 			cfg.Probes.MaxTokens,
 			llm.WithMaxConcurrency(cfg.Probes.MaxConcurrency),
 			llm.WithCircuitBreaker(cfg.Probes.CircuitBreakerThreshold, cfg.Probes.CircuitBreakerCooldown),
-		)
-		probeSpecs := make([]probes.Spec, len(cfg.Probes.Probes))
-		for i, s := range cfg.Probes.Probes {
-			probeSpecs[i] = probes.Spec{
-				Name:        s.Name,
-				Threshold:   s.Threshold,
-				Aggregation: s.Aggregation,
-			}
+		).WithProtocol(cfg.Probes.Protocol).WithModalProbeNames(modalProbeNames)
+		// SpecsProvider reads enabled probes from the DB on every Evaluate.
+		// Admin UI writes are picked up immediately without a restart; the
+		// query is a single indexed scan on a tiny table so the overhead
+		// per request is negligible.
+		//
+		// Phase 3 routing: when the request carries a resolved LLM policy,
+		// ListEnabledForPolicy returns that policy's attached probes. When
+		// the policy has no attachments yet, or the request has no policy
+		// at all, ListEnabledForPolicy falls back to the global enabled
+		// probes — this keeps Phase 1/2 deployments working unchanged.
+		probeSpecsProvider := func(ctx context.Context, policyID string) ([]probes.Spec, error) {
+			return pgProbeStore.ListEnabledForPolicy(ctx, policyID)
 		}
-		approvalManager.SetProbeRunner(probes.NewRunner(probeClient, probeSpecs, cfg.Probes.MaxBodyBytes))
+		approvalManager.SetProbeRunner(probes.NewRunner(probeClient, probeSpecsProvider, cfg.Probes.MaxBodyBytes))
+		probeDiscoverer = probeClient
 		slog.Info("probe evaluator enabled",
 			"endpoint", cfg.Probes.Endpoint,
+			"protocol", cfg.Probes.Protocol,
 			"model", cfg.Probes.Model,
-			"probes", len(probeSpecs),
 			"max_body_bytes", cfg.Probes.MaxBodyBytes,
 			"timeout", cfg.Probes.Timeout,
 			"max_concurrency", cfg.Probes.MaxConcurrency,
 			"cb_threshold", cfg.Probes.CircuitBreakerThreshold,
 			"cb_cooldown", cfg.Probes.CircuitBreakerCooldown,
 		)
+
+		// Best-effort startup discovery: surface misconfig early (wrong
+		// endpoint, auth) instead of on the first live request. Failures log
+		// but do not abort startup — probe-demo may come up after CrabTrap.
+		startupCtx, cancelStartup := context.WithTimeout(ctx, cfg.Probes.Timeout)
+		if err := probeClient.Ping(startupCtx); err != nil {
+			slog.Warn("probe-demo health check failed at startup", "error", err, "endpoint", cfg.Probes.Endpoint)
+		} else if ids, err := probeClient.ListModels(startupCtx); err != nil {
+			slog.Warn("probe-demo /v1/models unreachable at startup", "error", err)
+		} else {
+			slog.Info("probe-demo reachable", "endpoint", cfg.Probes.Endpoint, "available_models", ids)
+		}
+		cancelStartup()
 	}
 
 	// serverCtx is cancelled when the server starts shutting down, allowing
@@ -192,6 +250,8 @@ func main() {
 		tokenValidator:  pgUserStore,
 		userStore:    pgUserStore,
 		policyStore:  pgPolicyStore,
+		probesStore:  pgProbeStore,
+		probeDiscoverer: probeDiscoverer,
 		evalStore:    pgEvalStore,
 		llmJudge:     llmJudge,
 		agent:        llmAgent,
@@ -236,6 +296,8 @@ type adminAPIConfig struct {
 	tokenValidator  admin.WebTokenValidator
 	userStore    admin.UserStore
 	policyStore  llmpolicy.Store
+	probesStore  probes.Store
+	probeDiscoverer admin.ProbeDiscoverer
 	evalStore    eval.Store
 	llmJudge     *judge.LLMJudge
 	agent        *builder.PolicyAgent
@@ -253,6 +315,12 @@ func startAdminAPI(cfg adminAPIConfig) *http.Server {
 	api := admin.NewAPI(cfg.auditReader, cfg.dispatcher, cfg.sseChannel, cfg.tokenValidator, cfg.userStore)
 	if cfg.policyStore != nil {
 		api.SetLLMPolicyStore(cfg.policyStore)
+	}
+	if cfg.probesStore != nil {
+		api.SetProbesStore(cfg.probesStore)
+	}
+	if cfg.probeDiscoverer != nil {
+		api.SetProbeDiscoverer(cfg.probeDiscoverer)
 	}
 	if cfg.evalStore != nil && cfg.llmJudge != nil {
 		api.SetEvalRunner(cfg.evalStore, cfg.llmJudge)

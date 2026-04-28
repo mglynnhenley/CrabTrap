@@ -1622,6 +1622,10 @@ func applyDecision(e *types.AuditEntry, d types.ApprovalDecision, llmResponseID,
 	e.LLMPolicyID = d.LLMPolicyID
 	e.LLMResponseID = llmResponseID
 	e.LLMReason = llmReason // for SSE broadcast; not stored in DB column
+	e.ProbeScores = d.ProbeScores
+	e.ProbeTripped = d.ProbeTripped
+	e.ProbeAggregation = d.ProbeAggregation
+	e.ProbeCircuitOpen = d.ProbeCircuitOpen
 }
 
 // logEntry dispatches a fully-built audit entry to the DB reader, SSE, and audit file.
