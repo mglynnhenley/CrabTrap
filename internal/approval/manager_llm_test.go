@@ -442,6 +442,72 @@ func TestValidateStaticRules(t *testing.T) {
 	}
 }
 
+func TestValidatePolicyProbes(t *testing.T) {
+	cases := []struct {
+		name    string
+		probes  []types.PolicyProbe
+		wantErr bool
+	}{
+		{name: "empty list valid", probes: nil, wantErr: false},
+		{
+			name:    "valid binary mode (clear=0)",
+			probes:  []types.PolicyProbe{{Name: "injection", Threshold: 0.8, ClearThreshold: 0}},
+			wantErr: false,
+		},
+		{
+			name:    "valid gray-zone",
+			probes:  []types.PolicyProbe{{Name: "injection", Threshold: 0.8, ClearThreshold: 0.3}},
+			wantErr: false,
+		},
+		{
+			name:    "valid clear == threshold",
+			probes:  []types.PolicyProbe{{Name: "injection", Threshold: 0.8, ClearThreshold: 0.8}},
+			wantErr: false,
+		},
+		{
+			name:    "empty name rejected",
+			probes:  []types.PolicyProbe{{Name: "", Threshold: 0.5}},
+			wantErr: true,
+		},
+		{
+			name:    "duplicate names rejected",
+			probes:  []types.PolicyProbe{{Name: "x", Threshold: 0.5}, {Name: "x", Threshold: 0.6}},
+			wantErr: true,
+		},
+		{
+			name:    "threshold zero rejected",
+			probes:  []types.PolicyProbe{{Name: "x", Threshold: 0}},
+			wantErr: true,
+		},
+		{
+			name:    "threshold above 1 rejected",
+			probes:  []types.PolicyProbe{{Name: "x", Threshold: 1.1}},
+			wantErr: true,
+		},
+		{
+			name:    "negative clear rejected",
+			probes:  []types.PolicyProbe{{Name: "x", Threshold: 0.5, ClearThreshold: -0.1}},
+			wantErr: true,
+		},
+		{
+			name:    "clear above threshold rejected",
+			probes:  []types.PolicyProbe{{Name: "x", Threshold: 0.5, ClearThreshold: 0.6}},
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidatePolicyProbes(tc.probes)
+			if tc.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestStaticURLMatches(t *testing.T) {
 	cases := []struct {
 		urlStr    string

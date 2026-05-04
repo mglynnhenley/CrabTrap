@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestExpandEnvVars(t *testing.T) {
@@ -463,6 +464,118 @@ func TestRateLimitPerIP_PositiveAccepted(t *testing.T) {
 
 	if err := config.validate(); err != nil {
 		t.Fatalf("Unexpected validation error: %v", err)
+	}
+}
+
+func TestProbesConfig_DisabledByDefault(t *testing.T) {
+	cfg := Default()
+	if cfg.Probes.Enabled {
+		t.Errorf("Expected probes disabled by default, got enabled")
+	}
+}
+
+func TestProbesConfig_DefaultsApplied(t *testing.T) {
+	cfg := Default()
+	if cfg.Probes.Timeout != 2*time.Second {
+		t.Errorf("Expected probes.timeout default 2s, got %s", cfg.Probes.Timeout)
+	}
+	if cfg.Probes.BatchSize != 8 {
+		t.Errorf("Expected probes.batch_size default 8, got %d", cfg.Probes.BatchSize)
+	}
+	if cfg.Probes.MaxBodyBytes != 32*1024 {
+		t.Errorf("Expected probes.max_body_bytes default 32768, got %d", cfg.Probes.MaxBodyBytes)
+	}
+	if cfg.Probes.MaxConcurrency != 100 {
+		t.Errorf("Expected probes.max_concurrency default 100, got %d", cfg.Probes.MaxConcurrency)
+	}
+	if cfg.Probes.CircuitBreakerThreshold != 5 {
+		t.Errorf("Expected probes.circuit_breaker_threshold default 5, got %d", cfg.Probes.CircuitBreakerThreshold)
+	}
+	if cfg.Probes.CircuitBreakerCooldown != 10*time.Second {
+		t.Errorf("Expected probes.circuit_breaker_cooldown default 10s, got %s", cfg.Probes.CircuitBreakerCooldown)
+	}
+}
+
+func TestProbesConfig_EnabledRequiresEndpoint(t *testing.T) {
+	cfg := Default()
+	cfg.Probes.Enabled = true
+	if err := cfg.validate(); err == nil {
+		t.Fatal("Expected validation error when probes.enabled and endpoint missing")
+	}
+}
+
+// The Modal hallucination probe service does not require an API key. APIKey is
+// optional; only Endpoint is required when probes are enabled.
+func TestProbesConfig_EnabledValidWithoutAPIKey(t *testing.T) {
+	cfg := Default()
+	cfg.Probes.Enabled = true
+	cfg.Probes.Endpoint = "https://probes.example"
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("Unexpected validation error: %v", err)
+	}
+}
+
+func TestProbesConfig_LoadFromYAMLAndEnvExpand(t *testing.T) {
+	os.Setenv("TEST_PROBE_URL", "https://probes.test")
+	os.Setenv("TEST_PROBE_KEY", "secret-key")
+	defer os.Unsetenv("TEST_PROBE_URL")
+	defer os.Unsetenv("TEST_PROBE_KEY")
+
+	configContent := `
+proxy:
+  port: 8080
+
+tls:
+  ca_cert_path: ./certs/ca.crt
+  ca_key_path: ./certs/ca.key
+
+approval:
+  mode: passthrough
+
+audit:
+  output: stdout
+  format: json
+
+database:
+  url: "postgres://localhost/test"
+
+probes:
+  enabled: true
+  endpoint: "${TEST_PROBE_URL}"
+  api_key: "${TEST_PROBE_KEY}"
+  batch_size: 16
+  timeout: 1s
+  max_body_bytes: 4096
+`
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "test-config.yaml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if !cfg.Probes.Enabled {
+		t.Error("Expected probes enabled")
+	}
+	if cfg.Probes.Endpoint != "https://probes.test" {
+		t.Errorf("Expected probes.endpoint expanded, got %q", cfg.Probes.Endpoint)
+	}
+	if cfg.Probes.APIKey != "secret-key" {
+		t.Errorf("Expected probes.api_key expanded, got %q", cfg.Probes.APIKey)
+	}
+	if cfg.Probes.BatchSize != 16 {
+		t.Errorf("Expected probes.batch_size 16, got %d", cfg.Probes.BatchSize)
+	}
+	if cfg.Probes.Timeout != time.Second {
+		t.Errorf("Expected probes.timeout 1s, got %s", cfg.Probes.Timeout)
+	}
+	if cfg.Probes.MaxBodyBytes != 4096 {
+		t.Errorf("Expected probes.max_body_bytes 4096, got %d", cfg.Probes.MaxBodyBytes)
 	}
 }
 

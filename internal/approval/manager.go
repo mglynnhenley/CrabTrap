@@ -13,8 +13,16 @@ import (
 	"sync"
 
 	"github.com/brexhq/CrabTrap/internal/judge"
+	"github.com/brexhq/CrabTrap/internal/probes"
 	"github.com/brexhq/CrabTrap/pkg/types"
 )
+
+// ProbeEvaluator is the minimal contract Manager needs from the probe runner.
+// Defined here (not in internal/probes) so Manager can hold an interface and
+// tests can inject stubs without spinning up an HTTP server.
+type ProbeEvaluator interface {
+	Evaluate(ctx context.Context, specs []probes.Spec, method, url string, body []byte) probes.Result
+}
 
 // contextKey is an unexported type for context keys in this package.
 type contextKey string
@@ -39,9 +47,15 @@ const ContextKeyBufferedBody contextKey = "buffered_body"
 // Manager orchestrates the approval decision flow
 type Manager struct {
 	judge        *judge.LLMJudge // nil if LLM mode disabled
+	probes       ProbeEvaluator  // nil if probe tier disabled
 	mode         string          // "llm" | "passthrough"
 	fallbackMode string          // "deny" | "passthrough"
 
+}
+
+// SetProbeRunner wires in the probe-tier evaluator. nil disables the tier.
+func (m *Manager) SetProbeRunner(p ProbeEvaluator) {
+	m.probes = p
 }
 
 // NewManager creates a new approval manager.
@@ -146,6 +160,56 @@ func (m *Manager) checkApprovalLLM(ctx context.Context, req *http.Request, reque
 		evalBody = body
 	}
 
+	// Probe tier: a fast, cheap pre-filter between static rules and the judge.
+	// Tripped → DENY without invoking the judge. AllClear → ALLOW. Anything in
+	// between, plus any failure, falls through to the judge with the same policy.
+	var probeResp *types.ProbeResponse
+	if m.probes != nil && len(policy.Probes) > 0 {
+		specs := make([]probes.Spec, 0, len(policy.Probes))
+		for _, p := range policy.Probes {
+			clear := p.ClearThreshold
+			if clear == 0 {
+				clear = p.Threshold // binary mode: no gray zone
+			}
+			specs = append(specs, probes.Spec{
+				Name: p.Name, Threshold: p.Threshold, ClearThreshold: clear,
+			})
+		}
+		pres := m.probes.Evaluate(ctx, specs, req.Method, req.URL.String(), evalBody)
+		probeResp = probeResultToResponse(pres, specs)
+
+		if pres.Tripped != nil {
+			slog.Info("probe tripped, denying",
+				"request_id", requestID, "probe", pres.Tripped.Name,
+				"score", pres.Tripped.Score, "threshold", pres.Tripped.Threshold)
+			return types.ApprovalDecision{
+				Decision:    types.DecisionDeny,
+				ApprovedBy:  "probe",
+				Channel:     "probe",
+				Reason:      fmt.Sprintf("probe %q scored %.3f (threshold %.3f)", pres.Tripped.Name, pres.Tripped.Score, pres.Tripped.Threshold),
+				LLMPolicyID: policy.ID,
+				ProbeResponse: probeResp,
+			}, body, nil
+		}
+		if pres.AllClear {
+			return types.ApprovalDecision{
+				Decision:    types.DecisionAllow,
+				ApprovedBy:  "probe",
+				Channel:     "probe",
+				Reason:      "all probes scored below clear thresholds",
+				LLMPolicyID: policy.ID,
+				ProbeResponse: probeResp,
+			}, body, nil
+		}
+		if pres.SkippedReason != "" {
+			slog.Debug("probes skipped, falling through to judge",
+				"request_id", requestID, "reason", pres.SkippedReason)
+		}
+		// Gray zone or skipped: fall through to the judge with the same policy.
+		// probeResp is attached to the final ApprovalDecision below so the
+		// audit log carries informational scores even on judge-decided rows.
+	}
+
 	result, judgeErr := m.judge.Evaluate(ctx, req.Method, req.URL.String(), evalHeaders, string(evalBody), *policy)
 	if judgeErr != nil {
 		slog.Error("LLM judge error, using fallback", "request_id", requestID, "error", judgeErr, "fallback", m.fallbackMode)
@@ -154,6 +218,7 @@ func (m *Manager) checkApprovalLLM(ctx context.Context, req *http.Request, reque
 		if result.Model != "" {
 			ad.LLMResponse = judgeResultToLLMResponse(result, judgeErr)
 		}
+		ad.ProbeResponse = probeResp
 		return ad, b, err
 	}
 
@@ -161,29 +226,64 @@ func (m *Manager) checkApprovalLLM(ctx context.Context, req *http.Request, reque
 	switch result.Decision {
 	case types.DecisionAllow:
 		return types.ApprovalDecision{
-			Decision:    types.DecisionAllow,
-			ApprovedBy:  "llm",
-			Channel:     "llm",
-			Reason:      result.Reason,
-			LLMPolicyID: policy.ID,
-			LLMResponse: llmResp,
+			Decision:      types.DecisionAllow,
+			ApprovedBy:    "llm",
+			Channel:       "llm",
+			Reason:        result.Reason,
+			LLMPolicyID:   policy.ID,
+			LLMResponse:   llmResp,
+			ProbeResponse: probeResp,
 		}, body, nil
 	case types.DecisionDeny:
 		return types.ApprovalDecision{
-			Decision:    types.DecisionDeny,
-			ApprovedBy:  "llm",
-			Channel:     "llm",
-			Reason:      result.Reason,
-			LLMPolicyID: policy.ID,
-			LLMResponse: llmResp,
+			Decision:      types.DecisionDeny,
+			ApprovedBy:    "llm",
+			Channel:       "llm",
+			Reason:        result.Reason,
+			LLMPolicyID:   policy.ID,
+			LLMResponse:   llmResp,
+			ProbeResponse: probeResp,
 		}, body, nil
 	default:
 		slog.Warn("LLM judge returned unexpected decision, using fallback", "request_id", requestID, "decision", result.Decision, "fallback", m.fallbackMode)
 		ad, b, err := m.llmFallback(ctx, req, requestID, apiInfo, body)
 		ad.LLMPolicyID = policy.ID
 		ad.LLMResponse = llmResp
+		ad.ProbeResponse = probeResp
 		return ad, b, err
 	}
+}
+
+// probeResultToResponse converts a probe runner Result + the specs that were
+// evaluated into a self-contained ProbeResponse for audit logging. Each
+// ProbeScore carries the thresholds in effect at decision time.
+func probeResultToResponse(res probes.Result, specs []probes.Spec) *types.ProbeResponse {
+	out := &types.ProbeResponse{
+		DurationMs: res.DurationMs,
+		SkipReason: res.SkippedReason,
+	}
+	switch {
+	case res.SkippedReason != "":
+		out.Result = "skipped"
+	case res.Tripped != nil:
+		out.Result = "tripped"
+		out.Tripped = res.Tripped.Name
+	case res.AllClear:
+		out.Result = "all_clear"
+	default:
+		out.Result = "gray_zone"
+	}
+
+	out.Scores = make([]types.ProbeScore, 0, len(specs))
+	for _, s := range specs {
+		out.Scores = append(out.Scores, types.ProbeScore{
+			Name:           s.Name,
+			Score:          res.Scores[s.Name],
+			Threshold:      s.Threshold,
+			ClearThreshold: s.ClearThreshold,
+		})
+	}
+	return out
 }
 
 // requestBodyForApproval returns request bytes for policy checks and for callers
@@ -290,6 +390,30 @@ func MatchesStaticRules(method, rawURL string, rules []types.StaticRule) (matche
 		return true, "allow"
 	}
 	return false, ""
+}
+
+// ValidatePolicyProbes returns an error if any probe attachment is invalid.
+// Rules: name non-empty, threshold ∈ (0,1], clear_threshold ∈ [0, threshold].
+// clear_threshold=0 is allowed and means "binary mode" (no gray zone).
+// Names must be unique within the policy.
+func ValidatePolicyProbes(probes []types.PolicyProbe) error {
+	seen := make(map[string]struct{}, len(probes))
+	for i, p := range probes {
+		if p.Name == "" {
+			return fmt.Errorf("probe %d: name must not be empty", i)
+		}
+		if _, dup := seen[p.Name]; dup {
+			return fmt.Errorf("probe %d: duplicate name %q", i, p.Name)
+		}
+		seen[p.Name] = struct{}{}
+		if p.Threshold <= 0 || p.Threshold > 1 {
+			return fmt.Errorf("probe %d (%s): threshold must be in (0, 1], got %v", i, p.Name, p.Threshold)
+		}
+		if p.ClearThreshold < 0 || p.ClearThreshold > p.Threshold {
+			return fmt.Errorf("probe %d (%s): clear_threshold must be in [0, threshold], got %v (threshold=%v)", i, p.Name, p.ClearThreshold, p.Threshold)
+		}
+	}
+	return nil
 }
 
 // ValidateStaticRules returns an error if any rule is invalid.

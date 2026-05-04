@@ -78,12 +78,13 @@ type ApprovalRequest struct {
 
 // ApprovalDecision contains the decision for an approval request
 type ApprovalDecision struct {
-	Decision    DecisionType
-	ApprovedBy  string
-	Reason      string
-	Channel     string       // Channel used for approval (web, cli, cache, llm, etc.)
-	LLMPolicyID string       // Set when Channel="llm"; the policy that made the decision
-	LLMResponse *LLMResponse // Set when the judge actually ran (success or error)
+	Decision      DecisionType
+	ApprovedBy    string
+	Reason        string
+	Channel       string         // Channel used for approval (web, cli, cache, llm, probe, etc.)
+	LLMPolicyID   string         // Set when Channel="llm" or "probe"; the policy that made the decision
+	LLMResponse   *LLMResponse   // Set when the judge actually ran (success or error)
+	ProbeResponse *ProbeResponse // Set when the probe tier ran (regardless of whether it short-circuited)
 }
 
 // LLMResponse holds the raw result of one LLM judge call.
@@ -116,6 +117,34 @@ type StaticRule struct {
 	URLPattern string   `json:"url_pattern"`
 	MatchType  string   `json:"match_type"`  // "prefix" (default) | "exact" | "glob"
 	Action     string   `json:"action"`      // "allow" (default) | "deny"
+}
+
+// PolicyProbe attaches a linear probe to a policy with policy-specific thresholds.
+// Probes run before the LLM judge as a fast-path security layer.
+type PolicyProbe struct {
+	Name           string  `json:"name"`            // probe name as exposed by the probe service
+	Threshold      float64 `json:"threshold"`       // score >= threshold → DENY
+	ClearThreshold float64 `json:"clear_threshold"` // score <  clear_threshold → contributes to ALLOW; 0 = binary mode (no gray zone)
+}
+
+// ProbeScore is one probe's evaluation, self-contained: it carries the thresholds
+// in effect at decision time so historical audit visualizations stay correct
+// even if the policy's thresholds change later.
+type ProbeScore struct {
+	Name           string  `json:"name"`
+	Score          float64 `json:"score"`
+	Threshold      float64 `json:"threshold"`
+	ClearThreshold float64 `json:"clear_threshold"`
+}
+
+// ProbeResponse summarizes a probe-tier evaluation for audit logging.
+// Result is one of: "tripped", "all_clear", "gray_zone", "skipped".
+type ProbeResponse struct {
+	Result     string       `json:"result"`
+	Tripped    string       `json:"tripped,omitempty"`
+	Scores     []ProbeScore `json:"scores"`
+	DurationMs int          `json:"duration_ms"`
+	SkipReason string       `json:"skip_reason,omitempty"`
 }
 
 // ToolCallRecord records a tool invocation made by the assistant.
@@ -166,17 +195,18 @@ type PolicyMetadata struct {
 // LLMPolicy configures the LLM judge for a user.
 // Draft policies are mutable; publishing is one-way and makes the record immutable.
 type LLMPolicy struct {
-	ID               string           `json:"id"`
-	Name             string           `json:"name"`
-	Prompt           string           `json:"prompt"`
-	Provider         string           `json:"provider"`         // "" = use gateway default
-	Model            string           `json:"model"`            // "" = use gateway default
-	Status           string           `json:"status"`           // "draft" | "published"
-	ForkedFrom       string           `json:"forked_from,omitempty"`
-	StaticRules []StaticRule `json:"static_rules"`
-	Metadata         *PolicyMetadata  `json:"metadata,omitempty"`
-	CreatedAt        time.Time        `json:"created_at"`
-	DeletedAt        *time.Time       `json:"deleted_at,omitempty"`
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	Prompt      string          `json:"prompt"`
+	Provider    string          `json:"provider"` // "" = use gateway default
+	Model       string          `json:"model"`    // "" = use gateway default
+	Status      string          `json:"status"`   // "draft" | "published"
+	ForkedFrom  string          `json:"forked_from,omitempty"`
+	StaticRules []StaticRule    `json:"static_rules"`
+	Probes      []PolicyProbe   `json:"probes"`
+	Metadata    *PolicyMetadata `json:"metadata,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	DeletedAt   *time.Time      `json:"deleted_at,omitempty"`
 }
 
 // AuditEntry represents a log entry for audit trail
@@ -201,7 +231,8 @@ type AuditEntry struct {
 	ResponseHeaders http.Header `json:"response_headers,omitempty"`
 	ResponseBody    string      `json:"response_body,omitempty"`
 	APIInfo          *APIInfo    `json:"api_info,omitempty"`
-	LLMReason        string      `json:"llm_reason,omitempty"`       // Populated on read via JOIN to llm_responses; not stored
-	LLMResponseID    string      `json:"llm_response_id,omitempty"`  // FK to llm_responses; set when channel="llm"
-	LLMPolicyID      string      `json:"llm_policy_id,omitempty"`    // Policy that evaluated this request (set when channel="llm")
+	LLMReason        string         `json:"llm_reason,omitempty"`       // Populated on read via JOIN to llm_responses; not stored
+	LLMResponseID    string         `json:"llm_response_id,omitempty"`  // FK to llm_responses; set when channel="llm"
+	LLMPolicyID      string         `json:"llm_policy_id,omitempty"`    // Policy that evaluated this request (set when channel="llm" or "probe")
+	ProbeResponse    *ProbeResponse `json:"probe_response,omitempty"`   // Probe-tier evaluation, if it ran (channel="probe" or informational on judge-decided rows)
 }

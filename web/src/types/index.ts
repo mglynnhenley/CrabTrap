@@ -21,6 +21,7 @@ export interface AuditEntry {
   llm_reason?: string         // populated on read via JOIN to llm_responses
   llm_response_id?: string    // FK to llm_responses
   llm_policy_id?: string
+  probe_response?: ProbeResponse
 }
 
 export interface SSEEvent {
@@ -36,6 +37,33 @@ export interface StaticRule {
   url_pattern: string
   match_type?: 'prefix' | 'exact' | 'glob'  // default "prefix"
   action?: 'allow' | 'deny'                  // default "allow"
+}
+
+// Per-policy probe attachment. The probe service emits a score in [0,1];
+// score >= threshold → DENY, score < clear_threshold → ALLOW. clear_threshold
+// of 0 means "binary mode" — no gray zone, identical to threshold.
+export interface PolicyProbe {
+  name: string
+  threshold: number
+  clear_threshold: number
+}
+
+// One score recorded for the audit log. Carries the thresholds in effect at
+// decision time so historical visualizations stay correct after a threshold
+// change.
+export interface ProbeScore {
+  name: string
+  score: number
+  threshold: number
+  clear_threshold: number
+}
+
+export interface ProbeResponse {
+  result: 'tripped' | 'all_clear' | 'gray_zone' | 'skipped'
+  tripped?: string
+  scores: ProbeScore[]
+  duration_ms: number
+  skip_reason?: string
 }
 
 export interface PolicyStatsApprover {
@@ -97,6 +125,7 @@ export interface LLMPolicy {
   status: 'draft' | 'published'
   forked_from?: string
   static_rules?: StaticRule[]
+  probes?: PolicyProbe[]
   metadata?: PolicyMetadata
   created_at: string
   deleted_at?: string

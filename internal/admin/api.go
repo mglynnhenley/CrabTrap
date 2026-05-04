@@ -498,12 +498,13 @@ func (a *API) handleLLMPolicies(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		limitBody(w, r, maxBodySize)
 		var body struct {
-			Name        string             `json:"name"`
-			Prompt      string             `json:"prompt"`
-			Provider    string             `json:"provider"`
-			Model       string             `json:"model"`
-			Status      string             `json:"status"`
-			StaticRules []types.StaticRule `json:"static_rules"`
+			Name        string              `json:"name"`
+			Prompt      string              `json:"prompt"`
+			Provider    string              `json:"provider"`
+			Model       string              `json:"model"`
+			Status      string              `json:"status"`
+			StaticRules []types.StaticRule  `json:"static_rules"`
+			Probes      []types.PolicyProbe `json:"probes"`
 		}
 		if !decodeBody(w, r, &body) {
 			return
@@ -516,7 +517,11 @@ func (a *API) handleLLMPolicies(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid static_rules: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		policy, err := a.policyStore.Create(body.Name, body.Prompt, body.Provider, body.Model, "", body.Status, body.StaticRules)
+		if err := approval.ValidatePolicyProbes(body.Probes); err != nil {
+			http.Error(w, "invalid probes: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		policy, err := a.policyStore.Create(body.Name, body.Prompt, body.Provider, body.Model, "", body.Status, body.StaticRules, body.Probes)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to create policy", err)
 			return
@@ -594,11 +599,12 @@ func (a *API) handleLLMPolicyAction(w http.ResponseWriter, r *http.Request) {
 		// Update a draft policy's editable fields.
 		limitBody(w, r, maxBodySize)
 		var body struct {
-			Name        string             `json:"name"`
-			Prompt      string             `json:"prompt"`
-			Provider    string             `json:"provider"`
-			Model       string             `json:"model"`
-			StaticRules []types.StaticRule `json:"static_rules"`
+			Name        string              `json:"name"`
+			Prompt      string              `json:"prompt"`
+			Provider    string              `json:"provider"`
+			Model       string              `json:"model"`
+			StaticRules []types.StaticRule  `json:"static_rules"`
+			Probes      []types.PolicyProbe `json:"probes"`
 		}
 		if !decodeBody(w, r, &body) {
 			return
@@ -611,7 +617,11 @@ func (a *API) handleLLMPolicyAction(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid static_rules: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		policy, err := a.policyStore.UpdateDraft(id, body.Name, body.Prompt, body.Provider, body.Model, body.StaticRules)
+		if err := approval.ValidatePolicyProbes(body.Probes); err != nil {
+			http.Error(w, "invalid probes: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		policy, err := a.policyStore.UpdateDraft(id, body.Name, body.Prompt, body.Provider, body.Model, body.StaticRules, body.Probes)
 		if err != nil {
 			if errors.Is(err, llmpolicy.ErrPolicyNotDraft) {
 				http.Error(w, err.Error(), http.StatusConflict)
@@ -654,7 +664,7 @@ func (a *API) handleLLMPolicyAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Fork always creates a draft so the user can edit before publishing.
-		policy, err := a.policyStore.Create(body.Name, parent.Prompt, parent.Provider, parent.Model, id, "draft", parent.StaticRules)
+		policy, err := a.policyStore.Create(body.Name, parent.Prompt, parent.Provider, parent.Model, id, "draft", parent.StaticRules, parent.Probes)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to fork policy", err)
 			return
@@ -740,7 +750,7 @@ func (a *API) handleLLMPolicyAction(w http.ResponseWriter, r *http.Request) {
 				name = result.NewName
 			}
 			if result.PolicyUpdated || result.NewName != "" {
-				a.policyStore.UpdateDraft(id, name, result.PolicyPrompt, policy.Provider, policy.Model, result.StaticRules) //nolint:errcheck
+				a.policyStore.UpdateDraft(id, name, result.PolicyPrompt, policy.Provider, policy.Model, result.StaticRules, policy.Probes) //nolint:errcheck
 			}
 			// Always persist the final summaries state (covers analyze_traffic, remove_endpoints,
 			// and the case where all endpoints were removed — empty slice must be saved too).

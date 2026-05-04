@@ -2,7 +2,7 @@ import type {
   AuditEntry, LLMPolicy, PolicyStats,
   UserSummary, UserDetail,
   CreateUserRequest, UpdateUserRequest,
-  EvalRun, EvalResult, AuditLabel, LLMResponse, StaticRule, ChatMessage,
+  EvalRun, EvalResult, AuditLabel, LLMResponse, StaticRule, PolicyProbe, ChatMessage,
 } from '../types'
 
 const API_BASE = '/admin'
@@ -102,11 +102,11 @@ export async function getPolicy(id: string): Promise<LLMPolicy> {
   return fetchAPI<LLMPolicy>(`/llm-policies/${id}`)
 }
 
-export async function createPolicy(req: { name: string; prompt?: string; provider?: string; model?: string; status?: 'draft' | 'published'; static_rules?: StaticRule[] }): Promise<LLMPolicy> {
+export async function createPolicy(req: { name: string; prompt?: string; provider?: string; model?: string; status?: 'draft' | 'published'; static_rules?: StaticRule[]; probes?: PolicyProbe[] }): Promise<LLMPolicy> {
   return fetchAPI<LLMPolicy>('/llm-policies', { method: 'POST', body: JSON.stringify(req) })
 }
 
-export async function updateDraftPolicy(id: string, req: { name: string; prompt: string; provider: string; model: string; static_rules: StaticRule[] }): Promise<LLMPolicy> {
+export async function updateDraftPolicy(id: string, req: { name: string; prompt: string; provider: string; model: string; static_rules: StaticRule[]; probes?: PolicyProbe[] }): Promise<LLMPolicy> {
   return fetchAPI<LLMPolicy>(`/llm-policies/${id}`, { method: 'PUT', body: JSON.stringify(req) })
 }
 

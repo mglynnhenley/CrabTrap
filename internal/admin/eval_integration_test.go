@@ -141,7 +141,7 @@ func TestEvalFlow_CreateRun_Completes(t *testing.T) {
 
 	api, policyStore := newEvalAPI(t, newAllowJudge())
 
-	policy, err := policyStore.Create("eval-test-policy", "allow everything", "", "", "", "", nil)
+	policy, err := policyStore.Create("eval-test-policy", "allow everything", "", "", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create policy: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestEvalFlow_LabelUpdatesAgreed(t *testing.T) {
 	// Judge always returns DENY.
 	api, policyStore := newEvalAPI(t, newDenyJudge())
 
-	policy, _ := policyStore.Create("label-test-policy", "deny all", "", "", "", "", nil)
+	policy, _ := policyStore.Create("label-test-policy", "deny all", "", "", "", "", nil, nil)
 
 	// Entry originally "approved"; judge replays as DENY → disagrees without label.
 	entryID := seedAuditEntry(t, "GET", "/api/sensitive", "approved", policy.ID)
@@ -314,7 +314,7 @@ func TestEvalFlow_NoJudge_Returns503(t *testing.T) {
 	api.SetLLMPolicyStore(policyStore)
 	api.evalStore = evalStore // store set, but evalJudge remains nil
 
-	policy, _ := policyStore.Create("no-judge-policy", "prompt", "", "", "", "", nil)
+	policy, _ := policyStore.Create("no-judge-policy", "prompt", "", "", "", "", nil, nil)
 
 	rr := doEvalRequest(t, api, http.MethodPost, "/admin/evals", map[string]interface{}{
 		"policy_id": policy.ID,
@@ -352,8 +352,8 @@ func TestEvalList_ReturnsRunsForPolicy(t *testing.T) {
 
 	api, policyStore := newEvalAPI(t, newAllowJudge())
 
-	polA, _ := policyStore.Create("policy-a", "prompt", "", "", "", "", nil)
-	polB, _ := policyStore.Create("policy-b", "prompt", "", "", "", "", nil)
+	polA, _ := policyStore.Create("policy-a", "prompt", "", "", "", "", nil, nil)
+	polB, _ := policyStore.Create("policy-b", "prompt", "", "", "", "", nil, nil)
 
 	// Create one run for each policy.
 	doEvalRequest(t, api, http.MethodPost, "/admin/evals", map[string]interface{}{"policy_id": polA.ID})
@@ -411,7 +411,7 @@ func TestEvalFlow_StaticRuleReplayedWithoutLLM(t *testing.T) {
 	staticRules := []types.StaticRule{
 		{Methods: []string{"GET"}, URLPattern: "https://api.example.com/", MatchType: "prefix", Action: "allow"},
 	}
-	policy, err := policyStore.Create("static-rule-replay-policy", "deny everything", "", "", "", "", staticRules)
+	policy, err := policyStore.Create("static-rule-replay-policy", "deny everything", "", "", "", "", staticRules, nil)
 	if err != nil {
 		t.Fatalf("create policy: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestEvalFlow_DeleteLabel_RemovesLabelFromResults(t *testing.T) {
 
 	api, policyStore := newEvalAPI(t, newDenyJudge())
 
-	policy, _ := policyStore.Create("delete-label-policy", "deny all", "", "", "", "", nil)
+	policy, _ := policyStore.Create("delete-label-policy", "deny all", "", "", "", "", nil, nil)
 	entryID := seedAuditEntry(t, "GET", "/api/x", "approved", policy.ID)
 
 	rr := doEvalRequest(t, api, http.MethodPost, "/admin/evals", map[string]interface{}{
@@ -596,7 +596,7 @@ func TestEvalResults_FilterByApprovedBy(t *testing.T) {
 	truncateTables(t)
 
 	api, policyStore := newEvalAPI(t, newAllowJudge())
-	policy, _ := policyStore.Create("filter-approver-policy", "allow all", "", "", "", "", nil)
+	policy, _ := policyStore.Create("filter-approver-policy", "allow all", "", "", "", "", nil, nil)
 
 	// One entry that will hit the judge, one that matches passthrough rule
 	seedAuditEntry(t, "GET", "/api/read", "approved", policy.ID)
@@ -653,7 +653,7 @@ func TestEvalResults_FilterByMatched(t *testing.T) {
 
 	// Judge always DENYs — entries originally "approved" will disagree.
 	api, policyStore := newEvalAPI(t, newDenyJudge())
-	policy, _ := policyStore.Create("filter-matched-policy", "deny all", "", "", "", "", nil)
+	policy, _ := policyStore.Create("filter-matched-policy", "deny all", "", "", "", "", nil, nil)
 
 	seedAuditEntry(t, "GET", "/api/1", "approved", policy.ID) // DENY vs approved → disagree
 	seedAuditEntry(t, "GET", "/api/2", "denied", policy.ID)   // DENY vs denied  → agree
@@ -697,7 +697,7 @@ func TestEvalResults_ResponseIncludesTotal(t *testing.T) {
 	truncateTables(t)
 
 	api, policyStore := newEvalAPI(t, newAllowJudge())
-	policy, _ := policyStore.Create("response-shape-policy", "allow all", "", "", "", "", nil)
+	policy, _ := policyStore.Create("response-shape-policy", "allow all", "", "", "", "", nil, nil)
 
 	seedAuditEntry(t, "GET", "/api/1", "approved", policy.ID)
 	seedAuditEntry(t, "POST", "/api/2", "denied", policy.ID)
@@ -736,7 +736,7 @@ func TestEvalRun_PolicyNameReturnedInListAndGet(t *testing.T) {
 	truncateTables(t)
 
 	api, policyStore := newEvalAPI(t, newAllowJudge())
-	policy, _ := policyStore.Create("my-named-policy", "allow all", "", "", "", "", nil)
+	policy, _ := policyStore.Create("my-named-policy", "allow all", "", "", "", "", nil, nil)
 
 	rr := doEvalRequest(t, api, http.MethodPost, "/admin/evals", map[string]interface{}{
 		"policy_id": policy.ID,
@@ -784,7 +784,7 @@ func TestEvalRun_PolicyNameReturnedAfterDelete(t *testing.T) {
 	truncateTables(t)
 
 	api, policyStore := newEvalAPI(t, newAllowJudge())
-	policy, _ := policyStore.Create("policy-to-delete", "allow all", "", "", "", "", nil)
+	policy, _ := policyStore.Create("policy-to-delete", "allow all", "", "", "", "", nil, nil)
 
 	rr := doEvalRequest(t, api, http.MethodPost, "/admin/evals", map[string]interface{}{
 		"policy_id": policy.ID,
@@ -837,7 +837,7 @@ func TestEvalRun_TotalEntriesSetOnCreate(t *testing.T) {
 	truncateTables(t)
 
 	api, policyStore := newEvalAPI(t, newAllowJudge())
-	policy, _ := policyStore.Create("total-entries-policy", "allow all", "", "", "", "", nil)
+	policy, _ := policyStore.Create("total-entries-policy", "allow all", "", "", "", "", nil, nil)
 
 	seedAuditEntry(t, "GET", "/api/1", "approved", policy.ID)
 	seedAuditEntry(t, "GET", "/api/2", "approved", policy.ID)
@@ -884,7 +884,7 @@ func TestEvalRun_Cancel_StopsRun(t *testing.T) {
 	}})
 
 	api, policyStore := newEvalAPI(t, blockingJudge)
-	policy, _ := policyStore.Create("cancel-test-policy", "allow all", "", "", "", "", nil)
+	policy, _ := policyStore.Create("cancel-test-policy", "allow all", "", "", "", "", nil, nil)
 
 	// Seed more entries than the semaphore capacity (25) so at least one entry
 	// is waiting on the semaphore when we cancel.
@@ -938,7 +938,7 @@ func TestEvalRun_Cancel_NotRunning_Returns409(t *testing.T) {
 	truncateTables(t)
 
 	api, policyStore := newEvalAPI(t, newAllowJudge())
-	policy, _ := policyStore.Create("cancel-done-policy", "allow all", "", "", "", "", nil)
+	policy, _ := policyStore.Create("cancel-done-policy", "allow all", "", "", "", "", nil, nil)
 	seedAuditEntry(t, "GET", "/api/1", "approved", policy.ID)
 
 	rr := doEvalRequest(t, api, http.MethodPost, "/admin/evals", map[string]interface{}{

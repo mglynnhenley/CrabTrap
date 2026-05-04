@@ -4,6 +4,7 @@ import { useAuditLog } from '../hooks/useAuditLog'
 import { getUsers, getPolicies, getLLMResponse } from '../api/client'
 import { format } from 'date-fns'
 import type { UserSummary, LLMPolicy, LLMResponse } from '../types'
+import { ProbeResponseBlock } from './ProbeResponseBlock'
 
 function LLMResponseBlock({ llmResponseId, fallbackReason }: { llmResponseId: string; fallbackReason?: string }) {
   const [llmResp, setLlmResp] = useState<LLMResponse | null>(null)
@@ -420,6 +421,8 @@ export function AuditTrail() {
                             {entry.approved_by}
                             {entry.cache_hit ? (
                               <span className="text-gray-400 ml-1">via Cache</span>
+                            ) : entry.channel === 'probe' ? (
+                              <span className="ml-1 px-1.5 py-0.5 rounded text-xs bg-indigo-100 text-indigo-700 font-medium">via Probe</span>
                             ) : entry.channel && entry.channel !== 'auto' && (
                               <span className="text-gray-400 ml-1">via <span className="capitalize">{entry.channel}</span></span>
                             )}
@@ -433,6 +436,10 @@ export function AuditTrail() {
                     {isExpanded && (
                       <tr key={`${rowId}-expanded`}>
                         <td colSpan={7} className="px-6 py-4 bg-gray-50">
+                          {/* Linear probes — shown whenever a probe response was recorded,
+                              even on judge-decided rows so gray-zone scores stay visible. */}
+                          {entry.probe_response && <ProbeResponseBlock probe={entry.probe_response} />}
+
                           {/* LLM Judge */}
                           {entry.channel === 'llm' && entry.llm_response_id && (
                             <LLMResponseBlock

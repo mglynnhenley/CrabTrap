@@ -11,7 +11,7 @@ import { parseDatetimeLocal } from '../lib/utils'
 import { useAuth } from '../contexts/AuthContext'
 import type {
   LLMPolicy, PolicyStats, AuditEntry, TimeSeriesBucket, EvalRun,
-  UserSummary, StaticRule, ChatMessage,
+  UserSummary, StaticRule, PolicyProbe, ChatMessage,
 } from '../types'
 import { format } from 'date-fns'
 
@@ -99,6 +99,103 @@ function StaticRulesEditor({ rules, onChange, readOnly }: {
   )
 }
 
+// ---- Shared: ProbeAttachmentsEditor ----
+//
+// Linear probes are a cheap pre-filter that runs before the LLM judge. Each
+// probe scores in [0,1]; a score >= threshold denies, < clear_threshold
+// allows, and anything in between falls through to the judge. Probes attached
+// here apply only to this policy.
+
+function ProbeAttachmentsEditor({ probes, onChange, readOnly }: {
+  probes: PolicyProbe[]
+  onChange?: (probes: PolicyProbe[]) => void
+  readOnly?: boolean
+}) {
+  const [newName, setNewName] = useState('')
+  const [addError, setAddError] = useState<string | null>(null)
+
+  const update = (i: number, patch: Partial<PolicyProbe>) => {
+    if (!onChange) return
+    onChange(probes.map((p, idx) => idx === i ? { ...p, ...patch } : p))
+  }
+  const remove = (i: number) => onChange?.(probes.filter((_, idx) => idx !== i))
+
+  const handleAdd = () => {
+    const name = newName.trim()
+    if (!name) { setAddError('Probe name is required.'); return }
+    if (probes.some((p) => p.name === name)) { setAddError(`A probe named "${name}" is already attached.`); return }
+    setAddError(null)
+    setNewName('')
+    onChange?.([...probes, { name, threshold: 0.8, clear_threshold: 0 }])
+  }
+
+  if (readOnly) {
+    return (
+      <div className="space-y-1">
+        {probes.map((p, i) => (
+          <div key={i} className="flex items-center gap-3 text-xs font-mono rounded px-3 py-1.5 border bg-gray-50 border-gray-100">
+            <span className="font-semibold text-indigo-700 flex-1 truncate">{p.name}</span>
+            <span className="text-gray-500">deny ≥ {p.threshold.toFixed(2)}</span>
+            <span className="text-gray-400">
+              {p.clear_threshold > 0 ? `allow < ${p.clear_threshold.toFixed(2)}` : 'binary'}
+            </span>
+          </div>
+        ))}
+        {probes.length === 0 && <p className="text-gray-400 text-xs italic">No probes attached</p>}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      {probes.map((p, i) => {
+        const invalidClear = p.clear_threshold > p.threshold
+        return (
+          <div key={i} className="flex gap-2 items-center p-2 rounded-lg border border-gray-100 bg-gray-50">
+            <span className="font-mono text-xs font-semibold text-indigo-700 flex-1 truncate" title={p.name}>{p.name}</span>
+            <label className="text-xs text-gray-500 flex items-center gap-1">
+              deny ≥
+              <input
+                type="number" min={0} max={1} step={0.05}
+                className="border border-gray-300 rounded px-2 py-1 text-xs w-20 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                value={p.threshold}
+                onChange={(e) => update(i, { threshold: Number(e.target.value) })}
+              />
+            </label>
+            <label className="text-xs text-gray-500 flex items-center gap-1">
+              allow &lt;
+              <input
+                type="number" min={0} max={1} step={0.05}
+                className={`border rounded px-2 py-1 text-xs w-20 focus:outline-none focus:ring-2 bg-white ${invalidClear ? 'border-red-400 focus:ring-red-500' : 'border-gray-300 focus:ring-blue-500'}`}
+                value={p.clear_threshold}
+                onChange={(e) => update(i, { clear_threshold: Number(e.target.value) })}
+                placeholder="= threshold"
+                title={invalidClear ? 'must be ≤ threshold' : undefined}
+              />
+            </label>
+            <button type="button" onClick={() => remove(i)} className="text-gray-400 hover:text-red-500 text-lg leading-none px-1">&times;</button>
+          </div>
+        )
+      })}
+      <div className="flex gap-2 items-center pt-1">
+        <input
+          className="border border-gray-300 rounded-lg px-2 py-1.5 text-xs flex-1 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white font-mono"
+          value={newName}
+          onChange={(e) => { setNewName(e.target.value); setAddError(null) }}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAdd() } }}
+          placeholder="probe name (e.g. prompt_injection)"
+        />
+        <button type="button" onClick={handleAdd} className="text-xs text-blue-600 hover:underline">+ Add probe</button>
+      </div>
+      <p className="text-xs text-gray-400">
+        Type the name your probe service exposes. Names are not validated server-side; an unknown name will simply never trip.
+        Set "allow &lt;" to 0 for binary mode (no gray zone).
+      </p>
+      {addError && <p className="text-xs text-red-600">{addError}</p>}
+    </div>
+  )
+}
+
 // Converts persisted ChatMessage history back to display events.
 // Tool call messages become tool events (done=true); tool result messages are used
 // to populate the result field and otherwise skipped.
@@ -165,6 +262,7 @@ function DraftEditor({ policy, metadata, onSaved, onPublished, onDeleted, initia
   const [provider, setProvider] = useState(policy.provider)
   const [model, setModel] = useState(policy.model)
   const [rules, setRules] = useState<StaticRule[]>(policy.static_rules ?? [])
+  const [probes, setProbes] = useState<PolicyProbe[]>(policy.probes ?? [])
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState<string | null>(null)
   const [publishing, setPublishing] = useState(false)
@@ -227,7 +325,7 @@ function DraftEditor({ policy, metadata, onSaved, onPublished, onDeleted, initia
     setSaving(true)
     setSaveErr(null)
     try {
-      const updated = await updateDraftPolicy(policy.id, { name, prompt, provider, model, static_rules: rules })
+      const updated = await updateDraftPolicy(policy.id, { name, prompt, provider, model, static_rules: rules, probes })
       onSaved(updated)
     } catch (err) {
       setSaveErr(err instanceof Error ? err.message : 'Failed to save')
@@ -240,7 +338,7 @@ function DraftEditor({ policy, metadata, onSaved, onPublished, onDeleted, initia
     if (!window.confirm('Publish this policy? It will become immutable.')) return
     setPublishing(true)
     try {
-      await updateDraftPolicy(policy.id, { name, prompt, provider, model, static_rules: rules })
+      await updateDraftPolicy(policy.id, { name, prompt, provider, model, static_rules: rules, probes })
       const published = await publishPolicy(policy.id)
       onPublished(published)
     } catch (err) {
@@ -383,6 +481,12 @@ function DraftEditor({ policy, metadata, onSaved, onPublished, onDeleted, initia
           <div className="space-y-1">
             <label className="block text-sm font-medium text-gray-700">Static Rules</label>
             <StaticRulesEditor rules={rules} onChange={setRules} />
+          </div>
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-700" title="Probes run before the LLM judge as a cheap pre-filter. Score ≥ threshold denies; score < clear allows; in between defers to the judge.">
+              Linear probes (pre-judge)
+            </label>
+            <ProbeAttachmentsEditor probes={probes} onChange={setProbes} />
           </div>
         </div>
 
@@ -896,6 +1000,12 @@ function PublishedView({ policy, onDeleted }: { policy: LLMPolicy; onDeleted: ()
           <div>
             <div className="text-sm text-gray-500 mb-1">Static Rules</div>
             <StaticRulesEditor rules={policy.static_rules} readOnly />
+          </div>
+        )}
+        {policy.probes && policy.probes.length > 0 && (
+          <div>
+            <div className="text-sm text-gray-500 mb-1">Linear probes (pre-judge)</div>
+            <ProbeAttachmentsEditor probes={policy.probes} readOnly />
           </div>
         )}
       </div>

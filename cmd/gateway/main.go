@@ -21,6 +21,7 @@ import (
 	"github.com/brexhq/CrabTrap/internal/llm"
 	"github.com/brexhq/CrabTrap/internal/llmpolicy"
 	"github.com/brexhq/CrabTrap/internal/notifications"
+	"github.com/brexhq/CrabTrap/internal/probes"
 	"github.com/brexhq/CrabTrap/internal/proxy"
 )
 
@@ -143,6 +144,29 @@ func main() {
 				"thinking_model", cfg.LLMJudge.ThinkingModel,
 			)
 		}
+	}
+
+	// Wire up linear probes if enabled. Probes run BEFORE the judge as a cheap
+	// pre-filter; failures fall through to the judge so an outage cannot take
+	// down the gate.
+	if cfg.Probes.Enabled {
+		pr, err := probes.NewRunner(cfg.Probes,
+			llm.WithMaxConcurrency(cfg.Probes.MaxConcurrency),
+			llm.WithCircuitBreaker(cfg.Probes.CircuitBreakerThreshold, cfg.Probes.CircuitBreakerCooldown),
+		)
+		if err != nil {
+			slog.Error("failed to create probe runner", "error", err)
+			os.Exit(1)
+		}
+		approvalManager.SetProbeRunner(pr)
+		slog.Info("linear probes enabled",
+			"endpoint", cfg.Probes.Endpoint,
+			"batch_size", cfg.Probes.BatchSize,
+			"timeout", cfg.Probes.Timeout,
+			"max_concurrency", cfg.Probes.MaxConcurrency,
+			"cb_threshold", cfg.Probes.CircuitBreakerThreshold,
+			"cb_cooldown", cfg.Probes.CircuitBreakerCooldown,
+		)
 	}
 
 	// serverCtx is cancelled when the server starts shutting down, allowing

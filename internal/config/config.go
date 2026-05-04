@@ -26,14 +26,15 @@ type AdminConfig struct {
 
 // Config represents the gateway configuration
 type Config struct {
-	LogLevel    string            `yaml:"log_level"` // "debug", "info" (default), "warn", "error"
-	Proxy       ProxyConfig       `yaml:"proxy"`
-	TLS         TLSConfig         `yaml:"tls"`
-	Approval    ApprovalConfig    `yaml:"approval"`
-	Audit       AuditConfig       `yaml:"audit"`
-	Database    DatabaseConfig    `yaml:"database"`
-	LLMJudge    LLMJudgeConfig    `yaml:"llm_judge"`
-	Admin       AdminConfig       `yaml:"admin"`
+	LogLevel string         `yaml:"log_level"` // "debug", "info" (default), "warn", "error"
+	Proxy    ProxyConfig    `yaml:"proxy"`
+	TLS      TLSConfig      `yaml:"tls"`
+	Approval ApprovalConfig `yaml:"approval"`
+	Audit    AuditConfig    `yaml:"audit"`
+	Database DatabaseConfig `yaml:"database"`
+	LLMJudge LLMJudgeConfig `yaml:"llm_judge"`
+	Probes   ProbesConfig   `yaml:"probes"`
+	Admin    AdminConfig    `yaml:"admin"`
 }
 
 // ProxyConfig contains proxy server settings
@@ -93,6 +94,27 @@ type AuditConfig struct {
 	Format string `yaml:"format"`
 }
 
+// ProbesConfig contains settings for the linear-probe pre-judge security layer.
+// When enabled, probes score outbound requests against named risk dimensions
+// before the LLM judge runs. Per-policy thresholds are stored on each policy
+// (LLMPolicy.Probes), not in YAML.
+//
+// Latency budget: probes target ~500ms p99 added latency in steady state.
+// Timeout (default 2s) is the WORST-case wait on a slow probe before fall-through.
+// Operators MUST monitor probe latency in audit-log entries; if p99 regresses,
+// reduce Timeout (or set Enabled: false) until the probe service stabilises.
+type ProbesConfig struct {
+	Enabled                 bool          `yaml:"enabled"`
+	Endpoint                string        `yaml:"endpoint"`                  // env-expanded; full URL of the probe service
+	APIKey                  string        `yaml:"api_key"`                   // env-expanded; optional, sent as Bearer if set
+	BatchSize               int           `yaml:"batch_size"`                // tokens-per-batch passed to the probe service; default 8
+	Timeout                 time.Duration `yaml:"timeout"`                   // default 2s; worst-case wait on a slow probe before fall-through
+	MaxBodyBytes            int           `yaml:"max_body_bytes"`            // default 32768
+	MaxConcurrency          int           `yaml:"max_concurrency"`           // default 100
+	CircuitBreakerThreshold int           `yaml:"circuit_breaker_threshold"` // default 5
+	CircuitBreakerCooldown  time.Duration `yaml:"circuit_breaker_cooldown"`  // default 10s
+}
+
 // Load reads and parses the configuration file. If the file does not exist,
 // it falls back to passthrough defaults so the gateway can start without a
 // config file (e.g. Docker quickstart).
@@ -143,6 +165,9 @@ func (c *Config) expandEnvVars() {
 	// Expand LLM API keys
 	c.LLMJudge.AnthropicAPIKey = envutil.Expand(c.LLMJudge.AnthropicAPIKey)
 	c.LLMJudge.OpenAIAPIKey = envutil.Expand(c.LLMJudge.OpenAIAPIKey)
+	// Expand probe endpoint and API key
+	c.Probes.Endpoint = envutil.Expand(c.Probes.Endpoint)
+	c.Probes.APIKey = envutil.Expand(c.Probes.APIKey)
 }
 
 // applyDefaults sets default values for unspecified config fields
@@ -235,6 +260,24 @@ func (c *Config) applyDefaults() {
 	if *c.Proxy.RateLimitPerIP > 0 && c.Proxy.RateLimitBurst == 0 {
 		c.Proxy.RateLimitBurst = 100
 	}
+	if c.Probes.Timeout == 0 {
+		c.Probes.Timeout = 2 * time.Second
+	}
+	if c.Probes.BatchSize == 0 {
+		c.Probes.BatchSize = 8
+	}
+	if c.Probes.MaxBodyBytes == 0 {
+		c.Probes.MaxBodyBytes = 32 * 1024
+	}
+	if c.Probes.MaxConcurrency == 0 {
+		c.Probes.MaxConcurrency = 100
+	}
+	if c.Probes.CircuitBreakerThreshold == 0 {
+		c.Probes.CircuitBreakerThreshold = 5
+	}
+	if c.Probes.CircuitBreakerCooldown == 0 {
+		c.Probes.CircuitBreakerCooldown = 10 * time.Second
+	}
 }
 
 // validate checks if the configuration is valid
@@ -308,6 +351,21 @@ func (c *Config) validate() error {
 	}
 	if c.Proxy.RateLimitBurst < 0 {
 		return fmt.Errorf("rate_limit_burst must be non-negative (got %d)", c.Proxy.RateLimitBurst)
+	}
+
+	if c.Probes.Enabled {
+		if c.Probes.Endpoint == "" {
+			return fmt.Errorf("probes.endpoint is required when probes.enabled is true")
+		}
+		if c.Probes.Timeout <= 0 {
+			return fmt.Errorf("probes.timeout must be positive (got %s)", c.Probes.Timeout)
+		}
+		if c.Probes.MaxBodyBytes <= 0 {
+			return fmt.Errorf("probes.max_body_bytes must be positive (got %d)", c.Probes.MaxBodyBytes)
+		}
+		if c.Probes.BatchSize <= 0 {
+			return fmt.Errorf("probes.batch_size must be positive (got %d)", c.Probes.BatchSize)
+		}
 	}
 
 	return nil
