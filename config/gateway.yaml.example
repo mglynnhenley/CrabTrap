@@ -82,3 +82,29 @@ llm_judge:
   #   fast_model: gpt-4o-mini
   #   thinking_model: gpt-4o
   #   openai_api_key: "${OPENAI_API_KEY}"
+
+# Linear probes: cheap pre-judge filter that streams the request through a
+# probe service (today: Modal hallucination probe) and short-circuits obvious
+# DENY/ALLOW outcomes before the LLM judge runs.
+#
+# The probe service is single-purpose — one endpoint scores text along one
+# dimension. To attach a probe to a policy, add a probe by name in the policy
+# editor; the name is an audit-log label, and the policy's threshold /
+# clear_threshold tune the trip/clear bands. Multiple probes attached to the
+# same policy currently all hit this endpoint and see the same score, so use
+# multiple specs only when you want different threshold tuning at the policy
+# level.
+#
+# Latency budget: target ~500ms p99 added by probes in steady state. The
+# `timeout` below is the worst-case wait before falling through to the judge;
+# tune it down (or disable probes) if p99 regresses.
+# probes:
+#   enabled: false
+#   endpoint: "${PROBE_API_URL}"     # full URL of the streaming analyze endpoint
+#   api_key: "${PROBE_API_KEY}"      # optional; sent as Bearer when set
+#   batch_size: 8                    # tokens-per-batch passed to the probe service
+#   timeout: 2s                      # worst-case wait on a slow probe before fall-through
+#   max_body_bytes: 32768            # request body truncated above this before scoring
+#   max_concurrency: 100
+#   circuit_breaker_threshold: 5
+#   circuit_breaker_cooldown: 10s

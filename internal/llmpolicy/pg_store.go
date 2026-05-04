@@ -27,8 +27,8 @@ type Store interface {
 	List(limit, offset int) ([]*types.LLMPolicy, error)
 	GetMetadata(id string) (*types.PolicyMetadata, error)
 	UpsertMetadata(id string, metadata *types.PolicyMetadata) error
-	Create(name, prompt, provider, model, forkedFrom, status string, staticRules []types.StaticRule) (*types.LLMPolicy, error)
-	UpdateDraft(id, name, prompt, provider, model string, staticRules []types.StaticRule) (*types.LLMPolicy, error)
+	Create(name, prompt, provider, model, forkedFrom, status string, staticRules []types.StaticRule, probes []types.PolicyProbe) (*types.LLMPolicy, error)
+	UpdateDraft(id, name, prompt, provider, model string, staticRules []types.StaticRule, probes []types.PolicyProbe) (*types.LLMPolicy, error)
 	Publish(id string) (*types.LLMPolicy, error)
 	SetEndpointSummaries(id string, summaries []types.PolicyEndpointSummary) error
 	SetChatHistory(id string, history []types.ChatMessage) error
@@ -53,7 +53,7 @@ func scanPolicy(row interface {
 	var forkedFrom *string
 	err := row.Scan(
 		&p.ID, &p.Name, &p.Prompt, &p.Provider, &p.Model,
-		&p.Status, &forkedFrom, &p.StaticRules,
+		&p.Status, &forkedFrom, &p.StaticRules, &p.Probes,
 		&p.CreatedAt, &p.DeletedAt,
 	)
 	if err != nil {
@@ -65,7 +65,7 @@ func scanPolicy(row interface {
 	return &p, nil
 }
 
-const selectCols = `id, name, prompt, provider, model, status, forked_from, static_rules, created_at, deleted_at`
+const selectCols = `id, name, prompt, provider, model, status, forked_from, static_rules, probes, created_at, deleted_at`
 
 // Get fetches a single policy by ID. Metadata is not included; call GetMetadata separately.
 func (s *PGStore) Get(id string) (*types.LLMPolicy, error) {
@@ -151,12 +151,15 @@ func (s *PGStore) UpsertMetadata(id string, metadata *types.PolicyMetadata) erro
 // Create inserts a new policy record.
 // status should be "draft" or "published"; defaults to "published" if empty.
 // Builder metadata is not created here — it is written lazily on first update.
-func (s *PGStore) Create(name, prompt, provider, model, forkedFrom, status string, staticRules []types.StaticRule) (*types.LLMPolicy, error) {
+func (s *PGStore) Create(name, prompt, provider, model, forkedFrom, status string, staticRules []types.StaticRule, probes []types.PolicyProbe) (*types.LLMPolicy, error) {
 	if status == "" {
 		status = "published"
 	}
 	if staticRules == nil {
 		staticRules = []types.StaticRule{}
+	}
+	if probes == nil {
+		probes = []types.PolicyProbe{}
 	}
 	var forkedFromPtr *string
 	if forkedFrom != "" {
@@ -167,10 +170,10 @@ func (s *PGStore) Create(name, prompt, provider, model, forkedFrom, status strin
 	ctx := context.Background()
 	var createdAt time.Time
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO llm_policies(id, name, prompt, provider, model, status, forked_from, static_rules)
-		VALUES($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO llm_policies(id, name, prompt, provider, model, status, forked_from, static_rules, probes)
+		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING created_at
-	`, id, name, prompt, provider, model, status, forkedFromPtr, staticRules).Scan(&createdAt)
+	`, id, name, prompt, provider, model, status, forkedFromPtr, staticRules, probes).Scan(&createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("Create llm_policy: %w", err)
 	}
@@ -182,6 +185,7 @@ func (s *PGStore) Create(name, prompt, provider, model, forkedFrom, status strin
 		Model:       model,
 		Status:      status,
 		StaticRules: staticRules,
+		Probes:      probes,
 		CreatedAt:   createdAt,
 	}
 	if forkedFrom != "" {
@@ -192,17 +196,20 @@ func (s *PGStore) Create(name, prompt, provider, model, forkedFrom, status strin
 
 // UpdateDraft updates a draft policy's editable fields.
 // Returns ErrPolicyNotDraft if the policy is not in draft status.
-func (s *PGStore) UpdateDraft(id, name, prompt, provider, model string, staticRules []types.StaticRule) (*types.LLMPolicy, error) {
+func (s *PGStore) UpdateDraft(id, name, prompt, provider, model string, staticRules []types.StaticRule, probes []types.PolicyProbe) (*types.LLMPolicy, error) {
 	if staticRules == nil {
 		staticRules = []types.StaticRule{}
+	}
+	if probes == nil {
+		probes = []types.PolicyProbe{}
 	}
 	ctx := context.Background()
 
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE llm_policies
-		SET name=$2, prompt=$3, provider=$4, model=$5, static_rules=$6
+		SET name=$2, prompt=$3, provider=$4, model=$5, static_rules=$6, probes=$7
 		WHERE id=$1 AND status='draft' AND deleted_at IS NULL
-	`, id, name, prompt, provider, model, staticRules)
+	`, id, name, prompt, provider, model, staticRules, probes)
 	if err != nil {
 		return nil, fmt.Errorf("UpdateDraft: %w", err)
 	}

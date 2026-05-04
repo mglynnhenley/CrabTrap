@@ -72,8 +72,8 @@ func TestAudit_QueryFilter_PolicyID(t *testing.T) {
 	truncateTables(t)
 	api, reader, policyStore, userStore := newAuditAPI(t)
 
-	polA, _ := policyStore.Create("filter-pol-a", "prompt", "", "", "", "", nil)
-	polB, _ := policyStore.Create("filter-pol-b", "prompt", "", "", "", "", nil)
+	polA, _ := policyStore.Create("filter-pol-a", "prompt", "", "", "", "", nil, nil)
+	polB, _ := policyStore.Create("filter-pol-b", "prompt", "", "", "", "", nil, nil)
 
 	userStore.CreateUser(CreateUserRequest{ID: "filter-user"})
 	userStore.UpdateUser("filter-user", UpdateUserRequest{LLMPolicyID: &polA.ID})
@@ -125,7 +125,7 @@ func TestAudit_LLMPolicyID_RoundTrip(t *testing.T) {
 	truncateTables(t)
 	api, reader, policyStore, _ := newAuditAPI(t)
 
-	pol, _ := policyStore.Create("roundtrip-pol", "prompt", "", "", "", "", nil)
+	pol, _ := policyStore.Create("roundtrip-pol", "prompt", "", "", "", "", nil, nil)
 	seedEntry(reader, "rt1", "POST", "/rt", "approved", pol.ID, 42, "llm")
 
 	time.Sleep(100 * time.Millisecond)
@@ -155,7 +155,7 @@ func TestAudit_LLMResponseID_RoundTrip(t *testing.T) {
 	truncateTables(t)
 	api, reader, policyStore, _ := newAuditAPI(t)
 
-	pol, _ := policyStore.Create("llmresp-pol", "prompt", "", "", "", "", nil)
+	pol, _ := policyStore.Create("llmresp-pol", "prompt", "", "", "", "", nil, nil)
 
 	// Create an llm_responses row directly via the eval store.
 	evalStore := eval.NewPGStore(testPool)
@@ -211,6 +211,68 @@ func TestAudit_LLMResponseID_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestAudit_ProbeResponse_RoundTrip verifies that ProbeResponse with thresholds-at-decision-time
+// is persisted in the audit log and round-trips through the reader, including after the
+// policy's thresholds change later.
+func TestAudit_ProbeResponse_RoundTrip(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no test database")
+	}
+	truncateTables(t)
+	_, reader, policyStore, _ := newAuditAPI(t)
+
+	pol, _ := policyStore.Create("probe-pol", "prompt", "", "", "", "draft",
+		nil,
+		[]types.PolicyProbe{{Name: "injection", Threshold: 0.8, ClearThreshold: 0.3}},
+	)
+
+	pr := &types.ProbeResponse{
+		Result:  "tripped",
+		Tripped: "injection",
+		Scores: []types.ProbeScore{
+			{Name: "injection", Score: 0.95, Threshold: 0.8, ClearThreshold: 0.3},
+		},
+		DurationMs: 73,
+	}
+	reader.Add(types.AuditEntry{
+		Timestamp: time.Now(), RequestID: "pr1",
+		Method: "POST", URL: "/api/secret", Decision: "denied",
+		Channel: "probe", DurationMs: 73, ApprovedBy: "probe",
+		LLMPolicyID:   pol.ID,
+		ProbeResponse: pr,
+	})
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Mutate the live policy thresholds — the audit row should retain the
+	// thresholds in effect at decision time, not the new ones.
+	_, err := policyStore.UpdateDraft(pol.ID, "probe-pol", "prompt", "", "", nil,
+		[]types.PolicyProbe{{Name: "injection", Threshold: 0.5, ClearThreshold: 0.1}},
+	)
+	if err != nil {
+		t.Fatalf("UpdateDraft: %v", err)
+	}
+
+	entries := reader.Query(AuditFilter{Limit: 10})
+	if len(entries) == 0 {
+		t.Fatal("no entries returned")
+	}
+	got := entries[0]
+	if got.ProbeResponse == nil {
+		t.Fatal("ProbeResponse not loaded from audit_log")
+	}
+	if got.ProbeResponse.Result != "tripped" || got.ProbeResponse.Tripped != "injection" {
+		t.Errorf("ProbeResponse summary: got %+v", got.ProbeResponse)
+	}
+	if len(got.ProbeResponse.Scores) != 1 {
+		t.Fatalf("expected 1 ProbeScore, got %d", len(got.ProbeResponse.Scores))
+	}
+	s := got.ProbeResponse.Scores[0]
+	if s.Score != 0.95 || s.Threshold != 0.8 || s.ClearThreshold != 0.3 {
+		t.Errorf("ProbeScore should preserve thresholds at decision time, got %+v", s)
+	}
+}
+
 // --- GET /admin/llm-policies/{id}/stats ---
 
 // TestAuditStats_UsesStoredPolicyID is the core regression test: stats must be
@@ -222,8 +284,8 @@ func TestAuditStats_UsesStoredPolicyID(t *testing.T) {
 	truncateTables(t)
 	api, reader, policyStore, userStore := newAuditAPI(t)
 
-	polA, _ := policyStore.Create("stats-migration-a", "prompt", "", "", "", "", nil)
-	polB, _ := policyStore.Create("stats-migration-b", "prompt", "", "", "", "", nil)
+	polA, _ := policyStore.Create("stats-migration-a", "prompt", "", "", "", "", nil, nil)
+	polB, _ := policyStore.Create("stats-migration-b", "prompt", "", "", "", "", nil, nil)
 
 	userStore.CreateUser(CreateUserRequest{ID: "migrating-user"})
 	userStore.UpdateUser("migrating-user", UpdateUserRequest{LLMPolicyID: &polA.ID})
@@ -269,8 +331,8 @@ func TestAuditStats_Counts(t *testing.T) {
 	truncateTables(t)
 	api, reader, policyStore, userStore := newAuditAPI(t)
 
-	polA, _ := policyStore.Create("policy-a", "prompt a", "openai", "gpt-4", "", "", nil)
-	polB, _ := policyStore.Create("policy-b", "prompt b", "anthropic", "claude", "", "", nil)
+	polA, _ := policyStore.Create("policy-a", "prompt a", "openai", "gpt-4", "", "", nil, nil)
+	polB, _ := policyStore.Create("policy-b", "prompt b", "anthropic", "claude", "", "", nil, nil)
 
 	userStore.CreateUser(CreateUserRequest{ID: "stats-user-a1"})
 	userStore.CreateUser(CreateUserRequest{ID: "stats-user-a2"})

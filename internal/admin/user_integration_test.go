@@ -184,7 +184,7 @@ func TestUsers_Update_LLMPolicyID(t *testing.T) {
 
 	// Create a real policy so the FK is satisfied.
 	policyStore := llmpolicy.NewPGStore(testPool)
-	policy, _ := policyStore.Create("test-policy", "prompt", "", "", "", "", nil)
+	policy, _ := policyStore.Create("test-policy", "prompt", "", "", "", "", nil, nil)
 
 	rr := doAdminRequest(t, api, http.MethodPut, "/admin/users/frank%40example.com",
 		`{"llm_policy_id":"`+policy.ID+`"}`)
@@ -208,7 +208,7 @@ func TestUsers_Update_DraftPolicy_Returns400(t *testing.T) {
 	doAdminRequest(t, api, http.MethodPost, "/admin/users", `{"id":"draft-test@example.com","is_admin":false}`)
 
 	policyStore := llmpolicy.NewPGStore(testPool)
-	draft, _ := policyStore.Create("draft-policy", "prompt", "", "", "", "draft", nil)
+	draft, _ := policyStore.Create("draft-policy", "prompt", "", "", "", "draft", nil, nil)
 
 	rr := doAdminRequest(t, api, http.MethodPut, "/admin/users/draft-test%40example.com",
 		`{"llm_policy_id":"`+draft.ID+`"}`)
@@ -227,7 +227,7 @@ func TestUsers_Update_PublishedPolicyAfterDraft_Returns200(t *testing.T) {
 	doAdminRequest(t, api, http.MethodPost, "/admin/users", `{"id":"publish-test@example.com","is_admin":false}`)
 
 	policyStore := llmpolicy.NewPGStore(testPool)
-	draft, _ := policyStore.Create("to-publish", "prompt", "", "", "", "draft", nil)
+	draft, _ := policyStore.Create("to-publish", "prompt", "", "", "", "draft", nil, nil)
 	published, _ := policyStore.Publish(draft.ID)
 
 	rr := doAdminRequest(t, api, http.MethodPut, "/admin/users/publish-test%40example.com",
@@ -250,7 +250,7 @@ func TestUsers_Update_ClearLLMPolicyID(t *testing.T) {
 	api := newUserAPI(t)
 
 	policyStore := llmpolicy.NewPGStore(testPool)
-	policy, _ := policyStore.Create("test-policy", "prompt", "", "", "", "", nil)
+	policy, _ := policyStore.Create("test-policy", "prompt", "", "", "", "", nil, nil)
 
 	doAdminRequest(t, api, http.MethodPost, "/admin/users", `{"id":"grace@example.com","is_admin":false}`)
 	doAdminRequest(t, api, http.MethodPut, "/admin/users/grace%40example.com",

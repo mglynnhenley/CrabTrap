@@ -45,8 +45,8 @@ func TestPolicies_List_ReturnsCreatedPolicies(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	store.Create("policy-a", "prompt a", "", "", "", "", nil)
-	store.Create("policy-b", "prompt b", "anthropic", "claude", "", "", nil)
+	store.Create("policy-a", "prompt a", "", "", "", "", nil, nil)
+	store.Create("policy-b", "prompt b", "anthropic", "claude", "", "", nil, nil)
 
 	rr := doEvalRequest(t, api, http.MethodGet, "/admin/llm-policies", nil)
 	if rr.Code != http.StatusOK {
@@ -66,8 +66,8 @@ func TestPolicies_List_ExcludesDeleted(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	store.Create("keep", "prompt", "", "", "", "", nil)
-	del, _ := store.Create("delete-me", "prompt", "", "", "", "", nil)
+	store.Create("keep", "prompt", "", "", "", "", nil, nil)
+	del, _ := store.Create("delete-me", "prompt", "", "", "", "", nil, nil)
 	store.Delete(del.ID)
 
 	rr := doEvalRequest(t, api, http.MethodGet, "/admin/llm-policies", nil)
@@ -130,7 +130,7 @@ func TestPolicies_Get_Returns200(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	p, _ := store.Create("my-policy", "prompt text", "openai", "gpt-4", "", "", nil)
+	p, _ := store.Create("my-policy", "prompt text", "openai", "gpt-4", "", "", nil, nil)
 
 	rr := doEvalRequest(t, api, http.MethodGet, "/admin/llm-policies/"+p.ID, nil)
 	if rr.Code != http.StatusOK {
@@ -168,7 +168,7 @@ func TestPolicies_Fork_Returns201(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	parent, _ := store.Create("parent", "original prompt", "anthropic", "claude", "", "", nil)
+	parent, _ := store.Create("parent", "original prompt", "anthropic", "claude", "", "", nil, nil)
 
 	rr := doEvalRequest(t, api, http.MethodPost, "/admin/llm-policies/"+parent.ID+"/fork", map[string]interface{}{
 		"name": "child", "prompt": "updated prompt", "provider": "anthropic", "model": "claude",
@@ -209,7 +209,7 @@ func TestDeletePolicy_Returns204(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	p, _ := store.Create("delete-me", "prompt", "", "", "", "", nil)
+	p, _ := store.Create("delete-me", "prompt", "", "", "", "", nil, nil)
 
 	rr := doEvalRequest(t, api, http.MethodDelete, "/admin/llm-policies/"+p.ID, nil)
 	if rr.Code != http.StatusNoContent {
@@ -234,7 +234,7 @@ func TestDeletePolicy_StillAccessibleByID(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	p, _ := store.Create("keep-accessible", "prompt", "", "", "", "", nil)
+	p, _ := store.Create("keep-accessible", "prompt", "", "", "", "", nil, nil)
 	doEvalRequest(t, api, http.MethodDelete, "/admin/llm-policies/"+p.ID, nil)
 
 	rr := doEvalRequest(t, api, http.MethodGet, "/admin/llm-policies/"+p.ID, nil)
@@ -268,7 +268,7 @@ func TestDeletePolicy_AssignedUsers_Returns409(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	p, _ := store.Create("in-use", "prompt", "", "", "", "", nil)
+	p, _ := store.Create("in-use", "prompt", "", "", "", "", nil, nil)
 	_, err := testPool.Exec(context.Background(), `
 		INSERT INTO users(id, is_admin, llm_policy_id) VALUES('user-policy-test', false, $1)
 	`, p.ID)
@@ -291,7 +291,7 @@ func TestUpdateDraft_Returns200(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	draft, _ := store.Create("original", "old prompt", "", "", "", "draft", nil)
+	draft, _ := store.Create("original", "old prompt", "", "", "", "draft", nil, nil)
 
 	rr := doEvalRequest(t, api, http.MethodPut, "/admin/llm-policies/"+draft.ID, map[string]interface{}{
 		"name": "updated", "prompt": "new prompt", "provider": "", "model": "", "static_rules": []interface{}{},
@@ -316,7 +316,7 @@ func TestUpdateDraft_Published_Returns409(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	pub, _ := store.Create("pub", "prompt", "", "", "", "published", nil)
+	pub, _ := store.Create("pub", "prompt", "", "", "", "published", nil, nil)
 
 	rr := doEvalRequest(t, api, http.MethodPut, "/admin/llm-policies/"+pub.ID, map[string]interface{}{
 		"name": "new", "prompt": "p", "provider": "", "model": "", "static_rules": []interface{}{},
@@ -335,7 +335,7 @@ func TestPublish_Returns200(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	draft, _ := store.Create("d", "prompt", "", "", "", "draft", nil)
+	draft, _ := store.Create("d", "prompt", "", "", "", "draft", nil, nil)
 
 	rr := doEvalRequest(t, api, http.MethodPost, "/admin/llm-policies/"+draft.ID+"/publish", nil)
 	if rr.Code != http.StatusOK {
@@ -355,7 +355,7 @@ func TestPublish_AlreadyPublished_Returns409(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	pub, _ := store.Create("p", "prompt", "", "", "", "published", nil)
+	pub, _ := store.Create("p", "prompt", "", "", "", "published", nil, nil)
 
 	rr := doEvalRequest(t, api, http.MethodPost, "/admin/llm-policies/"+pub.ID+"/publish", nil)
 	if rr.Code != http.StatusConflict {
@@ -398,7 +398,7 @@ func TestAgent_UpdatesPolicy_StreamsResult(t *testing.T) {
 	}}
 
 	store := llmpolicy.NewPGStore(testPool)
-	draft, _ := store.Create("d", "old prompt", "", "", "", "draft", nil)
+	draft, _ := store.Create("d", "old prompt", "", "", "", "draft", nil, nil)
 
 	validator := &stubValidator{tokens: map[string]stubUser{adminToken: {userID: "admin@example.com", isAdmin: true}}}
 	api := NewAPI(&stubAuditReader{}, notifications.NewDispatcher(), notifications.NewSSEChannel("web"), validator, nil)
@@ -456,7 +456,7 @@ func TestAgent_Published_Returns409(t *testing.T) {
 	truncateTables(t)
 
 	store := llmpolicy.NewPGStore(testPool)
-	pub, _ := store.Create("p", "prompt", "", "", "", "published", nil)
+	pub, _ := store.Create("p", "prompt", "", "", "", "published", nil, nil)
 
 	thinking := &llm.TestAdapter{Fn: func(req llm.Request) (llm.Response, error) {
 		return llm.Response{Text: "ok", StopReason: "end_turn"}, nil
@@ -485,7 +485,7 @@ func TestAgent_SavesChatHistory(t *testing.T) {
 	}}
 
 	store := llmpolicy.NewPGStore(testPool)
-	draft, _ := store.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := store.Create("d", "p", "", "", "", "draft", nil, nil)
 
 	validator := &stubValidator{tokens: map[string]stubUser{adminToken: {userID: "admin@example.com", isAdmin: true}}}
 	api := NewAPI(&stubAuditReader{}, notifications.NewDispatcher(), notifications.NewSSEChannel("web"), validator, nil)
@@ -517,7 +517,7 @@ func TestAgent_RemoveEndpoints_SavesSummariesWithoutPolicyUpdate(t *testing.T) {
 	truncateTables(t)
 
 	store := llmpolicy.NewPGStore(testPool)
-	draft, _ := store.Create("d", "policy prompt", "", "", "", "draft", nil)
+	draft, _ := store.Create("d", "policy prompt", "", "", "", "draft", nil, nil)
 	// Pre-populate draft with endpoint summaries in metadata.
 	store.UpsertMetadata(draft.ID, &types.PolicyMetadata{ //nolint:errcheck
 		Source: "agent",
@@ -578,7 +578,7 @@ func TestAgent_RemoveAllEndpoints_SavesEmptySummaries(t *testing.T) {
 	truncateTables(t)
 
 	store := llmpolicy.NewPGStore(testPool)
-	draft, _ := store.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := store.Create("d", "p", "", "", "", "draft", nil, nil)
 	store.UpsertMetadata(draft.ID, &types.PolicyMetadata{ //nolint:errcheck
 		Source:            "agent",
 		EndpointSummaries: []types.PolicyEndpointSummary{{Method: "GET", PathPattern: "/v1/items", Count: 10, Description: "Lists items."}},
@@ -643,7 +643,7 @@ func TestUpdateDraft_MissingName_Returns400(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	draft, _ := store.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := store.Create("d", "p", "", "", "", "draft", nil, nil)
 
 	rr := doEvalRequest(t, api, http.MethodPut, "/admin/llm-policies/"+draft.ID, map[string]interface{}{
 		"name": "", "prompt": "p", "provider": "", "model": "", "static_rules": []interface{}{},
@@ -660,7 +660,7 @@ func TestUpdateDraft_StaticRulesPersisted(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	draft, _ := store.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := store.Create("d", "p", "", "", "", "draft", nil, nil)
 
 	rules := []types.StaticRule{
 		{Methods: []string{"GET"}, URLPattern: "https://api.example.com/", MatchType: "prefix"},
@@ -686,6 +686,106 @@ func TestUpdateDraft_StaticRulesPersisted(t *testing.T) {
 	}
 }
 
+func TestUpdateDraft_ProbesPersisted(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no test database")
+	}
+	truncateTables(t)
+	api, store := newPoliciesAPI(t)
+
+	draft, _ := store.Create("d", "p", "", "", "", "draft", nil, nil)
+
+	probes := []types.PolicyProbe{
+		{Name: "prompt_injection", Threshold: 0.85, ClearThreshold: 0.30},
+		{Name: "data_exfiltration", Threshold: 0.90, ClearThreshold: 0},
+	}
+	rr := doEvalRequest(t, api, http.MethodPut, "/admin/llm-policies/"+draft.ID, map[string]interface{}{
+		"name": "d", "prompt": "p", "provider": "", "model": "",
+		"static_rules": []interface{}{},
+		"probes":       probes,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT: got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	saved, err := store.Get(draft.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(saved.Probes) != 2 {
+		t.Fatalf("expected 2 probes in DB, got %d", len(saved.Probes))
+	}
+	if saved.Probes[0] != probes[0] || saved.Probes[1] != probes[1] {
+		t.Errorf("probes mismatch: got %+v, want %+v", saved.Probes, probes)
+	}
+
+	// GET returns the same list.
+	rr = doEvalRequest(t, api, http.MethodGet, "/admin/llm-policies/"+draft.ID, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET: got %d: %s", rr.Code, rr.Body.String())
+	}
+	var got types.LLMPolicy
+	json.NewDecoder(rr.Body).Decode(&got)
+	if len(got.Probes) != 2 || got.Probes[0] != probes[0] {
+		t.Errorf("GET response probes: got %+v", got.Probes)
+	}
+}
+
+func TestUpdateDraft_InvalidProbeRejected(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no test database")
+	}
+	truncateTables(t)
+	api, store := newPoliciesAPI(t)
+
+	draft, _ := store.Create("d", "p", "", "", "", "draft", nil, nil)
+
+	cases := []struct {
+		name string
+		body map[string]interface{}
+	}{
+		{
+			name: "empty name",
+			body: map[string]interface{}{
+				"name": "d", "prompt": "p",
+				"probes": []map[string]interface{}{{"name": "", "threshold": 0.8}},
+			},
+		},
+		{
+			name: "threshold zero",
+			body: map[string]interface{}{
+				"name": "d", "prompt": "p",
+				"probes": []map[string]interface{}{{"name": "x", "threshold": 0}},
+			},
+		},
+		{
+			name: "clear above threshold",
+			body: map[string]interface{}{
+				"name": "d", "prompt": "p",
+				"probes": []map[string]interface{}{{"name": "x", "threshold": 0.5, "clear_threshold": 0.6}},
+			},
+		},
+		{
+			name: "duplicate names",
+			body: map[string]interface{}{
+				"name": "d", "prompt": "p",
+				"probes": []map[string]interface{}{
+					{"name": "x", "threshold": 0.5},
+					{"name": "x", "threshold": 0.6},
+				},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := doEvalRequest(t, api, http.MethodPut, "/admin/llm-policies/"+draft.ID, tc.body)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
 func TestUpdateDraft_DenyRulePersisted(t *testing.T) {
 	if testPool == nil {
 		t.Skip("no test database")
@@ -693,7 +793,7 @@ func TestUpdateDraft_DenyRulePersisted(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	draft, _ := store.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := store.Create("d", "p", "", "", "", "draft", nil, nil)
 
 	rules := []types.StaticRule{
 		{Methods: []string{"DELETE"}, URLPattern: "https://api.example.com/", MatchType: "prefix", Action: "deny"},
@@ -724,7 +824,7 @@ func TestUpdateDraft_InvalidActionRejected(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	draft, _ := store.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := store.Create("d", "p", "", "", "", "draft", nil, nil)
 
 	rr := doEvalRequest(t, api, http.MethodPut, "/admin/llm-policies/"+draft.ID, map[string]interface{}{
 		"name": "d", "prompt": "p", "provider": "", "model": "",
@@ -758,7 +858,7 @@ func TestPublish_ImmutableAfterPublish(t *testing.T) {
 	truncateTables(t)
 	api, store := newPoliciesAPI(t)
 
-	draft, _ := store.Create("d", "original", "", "", "", "draft", nil)
+	draft, _ := store.Create("d", "original", "", "", "", "draft", nil, nil)
 
 	// Publish the draft.
 	rr := doEvalRequest(t, api, http.MethodPost, "/admin/llm-policies/"+draft.ID+"/publish", nil)
@@ -825,7 +925,7 @@ func TestAgent_AnalyzeAndUpdateE2E(t *testing.T) {
 	}}
 
 	store := llmpolicy.NewPGStore(testPool)
-	draft, _ := store.Create("Greenhouse Policy", "", "", "", "", "draft", nil)
+	draft, _ := store.Create("Greenhouse Policy", "", "", "", "", "draft", nil, nil)
 
 	validator := &stubValidator{tokens: map[string]stubUser{adminToken: {userID: "admin@example.com", isAdmin: true}}}
 	api := NewAPI(&stubAuditReader{}, notifications.NewDispatcher(), notifications.NewSSEChannel("web"), validator, nil)

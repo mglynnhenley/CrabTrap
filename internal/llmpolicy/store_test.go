@@ -42,7 +42,7 @@ func newStore(t *testing.T) *llmpolicy.PGStore {
 func TestCreate_StoresAllFields(t *testing.T) {
 	s := newStore(t)
 
-	p, err := s.Create("my policy", "Allow read-only access", "bedrock-anthropic", "claude-3", "", "", nil)
+	p, err := s.Create("my policy", "Allow read-only access", "bedrock-anthropic", "claude-3", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestCreate_StoresAllFields(t *testing.T) {
 func TestCreate_EmptyProviderAndModel(t *testing.T) {
 	s := newStore(t)
 
-	p, err := s.Create("minimal", "some prompt", "", "", "", "", nil)
+	p, err := s.Create("minimal", "some prompt", "", "", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -88,12 +88,12 @@ func TestCreate_EmptyProviderAndModel(t *testing.T) {
 func TestCreate_WithForkedFrom(t *testing.T) {
 	s := newStore(t)
 
-	parent, err := s.Create("parent", "original prompt", "", "", "", "", nil)
+	parent, err := s.Create("parent", "original prompt", "", "", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("Create parent: %v", err)
 	}
 
-	child, err := s.Create("child", "updated prompt", "", "", parent.ID, "", nil)
+	child, err := s.Create("child", "updated prompt", "", "", parent.ID, "", nil, nil)
 	if err != nil {
 		t.Fatalf("Create child: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestCreate_WithForkedFrom(t *testing.T) {
 func TestCreate_InvalidForkedFrom(t *testing.T) {
 	s := newStore(t)
 
-	_, err := s.Create("bad fork", "prompt", "", "", "llmpol_nonexistent", "", nil)
+	_, err := s.Create("bad fork", "prompt", "", "", "llmpol_nonexistent", "", nil, nil)
 	if err == nil {
 		t.Error("expected error for non-existent forked_from, got nil")
 	}
@@ -115,7 +115,7 @@ func TestCreate_InvalidForkedFrom(t *testing.T) {
 func TestGet_ReturnsCreatedPolicy(t *testing.T) {
 	s := newStore(t)
 
-	created, _ := s.Create("test", "prompt text", "bedrock-anthropic", "claude-3", "", "", nil)
+	created, _ := s.Create("test", "prompt text", "bedrock-anthropic", "claude-3", "", "", nil, nil)
 
 	got, err := s.Get(created.ID)
 	if err != nil {
@@ -141,9 +141,9 @@ func TestGet_NotFound(t *testing.T) {
 func TestList_ReturnsAllPolicies(t *testing.T) {
 	s := newStore(t)
 
-	s.Create("policy-a", "prompt a", "", "", "", "", nil)
-	s.Create("policy-b", "prompt b", "", "", "", "", nil)
-	s.Create("policy-c", "prompt c", "", "", "", "", nil)
+	s.Create("policy-a", "prompt a", "", "", "", "", nil, nil)
+	s.Create("policy-b", "prompt b", "", "", "", "", nil, nil)
+	s.Create("policy-c", "prompt c", "", "", "", "", nil, nil)
 
 	policies, err := s.List(50, 0)
 	if err != nil {
@@ -157,9 +157,9 @@ func TestList_ReturnsAllPolicies(t *testing.T) {
 func TestList_OrderedByCreatedAtDesc(t *testing.T) {
 	s := newStore(t)
 
-	s.Create("first", "p1", "", "", "", "", nil)
-	s.Create("second", "p2", "", "", "", "", nil)
-	s.Create("third", "p3", "", "", "", "", nil)
+	s.Create("first", "p1", "", "", "", "", nil, nil)
+	s.Create("second", "p2", "", "", "", "", nil, nil)
+	s.Create("third", "p3", "", "", "", "", nil, nil)
 
 	policies, _ := s.List(50, 0)
 	// Most recently created should be first.
@@ -172,7 +172,7 @@ func TestList_Pagination(t *testing.T) {
 	s := newStore(t)
 
 	for i := 0; i < 5; i++ {
-		s.Create("policy", "prompt", "", "", "", "", nil)
+		s.Create("policy", "prompt", "", "", "", "", nil, nil)
 	}
 
 	page1, _ := s.List(3, 0)
@@ -198,7 +198,7 @@ func TestList_Pagination(t *testing.T) {
 func TestDelete_SoftDeletesPolicy(t *testing.T) {
 	s := newStore(t)
 
-	p, _ := s.Create("to-delete", "prompt", "", "", "", "", nil)
+	p, _ := s.Create("to-delete", "prompt", "", "", "", "", nil, nil)
 
 	if err := s.Delete(p.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -225,7 +225,7 @@ func TestDelete_SoftDeletesPolicy(t *testing.T) {
 func TestDelete_AlreadyDeleted_ReturnsError(t *testing.T) {
 	s := newStore(t)
 
-	p, _ := s.Create("double-delete", "prompt", "", "", "", "", nil)
+	p, _ := s.Create("double-delete", "prompt", "", "", "", "", nil, nil)
 	s.Delete(p.ID)
 
 	if err := s.Delete(p.ID); err == nil {
@@ -244,7 +244,7 @@ func TestDelete_NonExistent_ReturnsError(t *testing.T) {
 func TestDelete_BlockedWhenUsersAssigned(t *testing.T) {
 	s := newStore(t)
 
-	p, _ := s.Create("in-use", "prompt", "", "", "", "", nil)
+	p, _ := s.Create("in-use", "prompt", "", "", "", "", nil, nil)
 
 	// Assign a user to the policy
 	_, err := testPool.Exec(context.Background(), `
@@ -262,8 +262,8 @@ func TestDelete_BlockedWhenUsersAssigned(t *testing.T) {
 func TestList_ExcludesDeleted(t *testing.T) {
 	s := newStore(t)
 
-	a, _ := s.Create("keep", "p", "", "", "", "", nil)
-	b, _ := s.Create("delete-me", "p", "", "", "", "", nil)
+	a, _ := s.Create("keep", "p", "", "", "", "", nil, nil)
+	b, _ := s.Create("delete-me", "p", "", "", "", "", nil, nil)
 	s.Delete(b.ID)
 
 	policies, _ := s.List(50, 0)
@@ -290,8 +290,8 @@ func TestList_EmptyReturnsEmptySlice(t *testing.T) {
 func TestGet_ForkedFromPopulated(t *testing.T) {
 	s := newStore(t)
 
-	parent, _ := s.Create("parent", "prompt", "", "", "", "", nil)
-	child, _ := s.Create("child", "updated", "", "", parent.ID, "", nil)
+	parent, _ := s.Create("parent", "prompt", "", "", "", "", nil, nil)
+	child, _ := s.Create("child", "updated", "", "", parent.ID, "", nil, nil)
 
 	got, err := s.Get(child.ID)
 	if err != nil {
@@ -310,8 +310,8 @@ func TestUpdateDraft_UpdatesFields(t *testing.T) {
 	}
 	s := newStore(t)
 
-	draft, _ := s.Create("original", "old prompt", "", "", "", "draft", nil)
-	updated, err := s.UpdateDraft(draft.ID, "renamed", "new prompt", "anthropic", "claude", nil)
+	draft, _ := s.Create("original", "old prompt", "", "", "", "draft", nil, nil)
+	updated, err := s.UpdateDraft(draft.ID, "renamed", "new prompt", "anthropic", "claude", nil, nil)
 	if err != nil {
 		t.Fatalf("UpdateDraft: %v", err)
 	}
@@ -332,8 +332,8 @@ func TestUpdateDraft_RejectsPublished(t *testing.T) {
 	}
 	s := newStore(t)
 
-	published, _ := s.Create("pub", "prompt", "", "", "", "published", nil)
-	_, err := s.UpdateDraft(published.ID, "renamed", "new", "", "", nil)
+	published, _ := s.Create("pub", "prompt", "", "", "", "published", nil, nil)
+	_, err := s.UpdateDraft(published.ID, "renamed", "new", "", "", nil, nil)
 	if !errors.Is(err, llmpolicy.ErrPolicyNotDraft) {
 		t.Errorf("expected ErrPolicyNotDraft, got %v", err)
 	}
@@ -345,7 +345,7 @@ func TestUpdateDraft_MetadataIndependentOfPolicyFields(t *testing.T) {
 	}
 	s := newStore(t)
 
-	draft, _ := s.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := s.Create("d", "p", "", "", "", "draft", nil, nil)
 
 	// Write metadata separately via UpsertMetadata.
 	meta := &types.PolicyMetadata{Source: "suggest", AnalyzedUserID: "alice@example.com"}
@@ -354,7 +354,7 @@ func TestUpdateDraft_MetadataIndependentOfPolicyFields(t *testing.T) {
 	}
 
 	// Updating policy fields does NOT touch metadata.
-	if _, err := s.UpdateDraft(draft.ID, "renamed", "new prompt", "", "", nil); err != nil {
+	if _, err := s.UpdateDraft(draft.ID, "renamed", "new prompt", "", "", nil, nil); err != nil {
 		t.Fatalf("UpdateDraft: %v", err)
 	}
 
@@ -375,7 +375,7 @@ func TestPublish_TransitionsToDraftPublished(t *testing.T) {
 	}
 	s := newStore(t)
 
-	draft, _ := s.Create("d", "prompt", "", "", "", "draft", nil)
+	draft, _ := s.Create("d", "prompt", "", "", "", "draft", nil, nil)
 	if draft.Status != "draft" {
 		t.Fatalf("expected draft status, got %q", draft.Status)
 	}
@@ -395,7 +395,7 @@ func TestPublish_RejectsAlreadyPublished(t *testing.T) {
 	}
 	s := newStore(t)
 
-	published, _ := s.Create("p", "prompt", "", "", "", "published", nil)
+	published, _ := s.Create("p", "prompt", "", "", "", "published", nil, nil)
 	_, err := s.Publish(published.ID)
 	if !errors.Is(err, llmpolicy.ErrPolicyNotDraft) {
 		t.Errorf("expected ErrPolicyNotDraft, got %v", err)
@@ -408,7 +408,7 @@ func TestCreate_DraftStatus(t *testing.T) {
 	}
 	s := newStore(t)
 
-	draft, err := s.Create("draft policy", "prompt", "", "", "", "draft", nil)
+	draft, err := s.Create("draft policy", "prompt", "", "", "", "draft", nil, nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -423,7 +423,7 @@ func TestCreate_DefaultsToPublished(t *testing.T) {
 	}
 	s := newStore(t)
 
-	policy, err := s.Create("pub policy", "prompt", "", "", "", "", nil)
+	policy, err := s.Create("pub policy", "prompt", "", "", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestSetChatHistory_PersistsAndLoads(t *testing.T) {
 	}
 	s := newStore(t)
 
-	draft, _ := s.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := s.Create("d", "p", "", "", "", "draft", nil, nil)
 
 	history := []types.ChatMessage{
 		{Role: "user", Content: "analyze my traffic"},
@@ -474,7 +474,7 @@ func TestSetChatHistory_AppendsTurnsAcrossCalls(t *testing.T) {
 	}
 	s := newStore(t)
 
-	draft, _ := s.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := s.Create("d", "p", "", "", "", "draft", nil, nil)
 
 	// First turn.
 	if err := s.SetChatHistory(draft.ID, []types.ChatMessage{
@@ -506,7 +506,7 @@ func TestSetChatHistory_PreservesExistingMetadata(t *testing.T) {
 	}
 	s := newStore(t)
 
-	draft, _ := s.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := s.Create("d", "p", "", "", "", "draft", nil, nil)
 	// Set initial metadata so we can verify SetChatHistory preserves it.
 	s.UpsertMetadata(draft.ID, &types.PolicyMetadata{Source: "suggest", AnalyzedUserID: "alice@example.com"}) //nolint:errcheck
 
@@ -535,7 +535,7 @@ func TestSetChatHistory_WorksWithNoPreexistingMetadata(t *testing.T) {
 	s := newStore(t)
 
 	// Create draft with no metadata at all.
-	draft, _ := s.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := s.Create("d", "p", "", "", "", "draft", nil, nil)
 
 	if err := s.SetChatHistory(draft.ID, []types.ChatMessage{
 		{Role: "user", Content: "hello"},
@@ -557,7 +557,7 @@ func TestSetEndpointSummaries_PersistsAndLoads(t *testing.T) {
 	}
 	s := newStore(t)
 
-	draft, _ := s.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := s.Create("d", "p", "", "", "", "draft", nil, nil)
 
 	summaries := []types.PolicyEndpointSummary{
 		{Method: "GET", PathPattern: "/v1/applications/{id}", Count: 120, Description: "Fetches an application."},
@@ -591,7 +591,7 @@ func TestSetEndpointSummaries_PreservesOtherMetadata(t *testing.T) {
 	}
 	s := newStore(t)
 
-	draft, _ := s.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := s.Create("d", "p", "", "", "", "draft", nil, nil)
 	s.UpsertMetadata(draft.ID, &types.PolicyMetadata{Source: "agent", AnalyzedUserID: "alice@example.com"}) //nolint:errcheck
 
 	if err := s.SetEndpointSummaries(draft.ID, []types.PolicyEndpointSummary{
@@ -618,7 +618,7 @@ func TestSetEndpointSummaries_WorksWithNoPreexistingMetadata(t *testing.T) {
 	}
 	s := newStore(t)
 
-	draft, _ := s.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := s.Create("d", "p", "", "", "", "draft", nil, nil)
 
 	if err := s.SetEndpointSummaries(draft.ID, []types.PolicyEndpointSummary{
 		{Method: "GET", PathPattern: "/v1/items", Count: 5, Description: "Lists items."},
@@ -632,13 +632,75 @@ func TestSetEndpointSummaries_WorksWithNoPreexistingMetadata(t *testing.T) {
 	}
 }
 
+func TestCreate_RoundTripsProbes(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no test database")
+	}
+	s := newStore(t)
+
+	probes := []types.PolicyProbe{
+		{Name: "prompt_injection", Threshold: 0.85, ClearThreshold: 0.30},
+		{Name: "data_exfiltration", Threshold: 0.90, ClearThreshold: 0},
+	}
+	created, err := s.Create("with-probes", "prompt", "", "", "", "draft", nil, probes)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := len(created.Probes); got != 2 {
+		t.Fatalf("Create returned %d probes, want 2", got)
+	}
+
+	loaded, err := s.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got := len(loaded.Probes); got != 2 {
+		t.Fatalf("Get returned %d probes, want 2", got)
+	}
+	if loaded.Probes[0] != probes[0] || loaded.Probes[1] != probes[1] {
+		t.Errorf("probes mismatch: got %+v, want %+v", loaded.Probes, probes)
+	}
+}
+
+func TestUpdateDraft_RoundTripsProbes(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no test database")
+	}
+	s := newStore(t)
+
+	draft, err := s.Create("d", "p", "", "", "", "draft", nil, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	probes := []types.PolicyProbe{
+		{Name: "prompt_injection", Threshold: 0.80, ClearThreshold: 0.20},
+	}
+	updated, err := s.UpdateDraft(draft.ID, "d", "p", "", "", nil, probes)
+	if err != nil {
+		t.Fatalf("UpdateDraft: %v", err)
+	}
+	if got := len(updated.Probes); got != 1 || updated.Probes[0] != probes[0] {
+		t.Errorf("UpdateDraft probes: got %+v, want %+v", updated.Probes, probes)
+	}
+
+	// Empty slice clears probes (and persists as []).
+	cleared, err := s.UpdateDraft(draft.ID, "d", "p", "", "", nil, []types.PolicyProbe{})
+	if err != nil {
+		t.Fatalf("UpdateDraft clear: %v", err)
+	}
+	if len(cleared.Probes) != 0 {
+		t.Errorf("expected cleared probes, got %+v", cleared.Probes)
+	}
+}
+
 func TestSetEndpointSummaries_EmptySliceClearsExisting(t *testing.T) {
 	if testPool == nil {
 		t.Skip("no test database")
 	}
 	s := newStore(t)
 
-	draft, _ := s.Create("d", "p", "", "", "", "draft", nil)
+	draft, _ := s.Create("d", "p", "", "", "", "draft", nil, nil)
 	// Set initial summaries.
 	s.UpsertMetadata(draft.ID, &types.PolicyMetadata{ //nolint:errcheck
 		Source:            "agent",
